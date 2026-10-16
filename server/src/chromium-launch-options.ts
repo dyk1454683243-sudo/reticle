@@ -22,13 +22,6 @@ export const CHROMIUM_ANTI_THROTTLING_ARGS = [
   '--disable-renderer-backgrounding',
 ] as const;
 
-/**
- * Lets a public page reach the bridge on loopback without a prompt. Chromium 151 blocks a public
- * origin's `ws://127.0.0.1` with ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS, and a leased browser
- * has nobody to grant it. A production drive is the case: the site is public and the daemon is local.
- */
-export const CHROMIUM_LOCAL_NETWORK_ARG = '--disable-features=LocalNetworkAccessChecks';
-
 /** The options object handed to `chromium.launch` at both launch sites. */
 export interface ChromiumLaunchOptions {
   headless: boolean;
@@ -50,7 +43,7 @@ export function chromiumLaunchOptions(
 ): ChromiumLaunchOptions {
   return {
     headless,
-    args: [...CHROMIUM_ANTI_THROTTLING_ARGS, CHROMIUM_LOCAL_NETWORK_ARG],
+    args: [...CHROMIUM_ANTI_THROTTLING_ARGS],
     ...(channel === undefined ? {} : { channel }),
     ...(executablePath === undefined ? {} : { executablePath }),
   };

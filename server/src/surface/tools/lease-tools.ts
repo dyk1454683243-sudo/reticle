@@ -457,7 +457,10 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
     const root = asString(args['root']);
     const headed = true === args['headed'];
     const hud = Object.values(HudVisibility).find((v) => v === args['hud']);
-    const permissions = parseLeasePermissions(args['permissions']);
+    const permissions = production.leasePermissions(
+      parseLeasePermissions(args['permissions']),
+      args['production'],
+    );
     const emulate = leaseEmulationOf(args['emulate']);
     // The stub of the shell bindings, when the caller supplied one. Installed by the pool before
     // the first navigation, so it is already defined when the app's first module runs.

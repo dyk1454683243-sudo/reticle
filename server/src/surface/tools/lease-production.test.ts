@@ -28,6 +28,7 @@ function acquire(deps: ToolDeps, args: Record<string, unknown>): Promise<unknown
 interface Recorded {
   pool: BrowserPool;
   acquired: string[];
+  permissions: (readonly string[] | undefined)[];
   guard: ((method: string, url: string) => string | undefined) | undefined;
 }
 
@@ -35,11 +36,16 @@ function fakePool(): Recorded {
   const recorded: Recorded = {
     pool: undefined as unknown as BrowserPool,
     acquired: [],
+    permissions: [],
     guard: undefined,
   };
   recorded.pool = {
-    acquire(url: string, o: { sessionId?: string } = {}): Promise<Lease> {
+    acquire(
+      url: string,
+      o: { sessionId?: string; permissions?: readonly string[] } = {},
+    ): Promise<Lease> {
       recorded.acquired.push(url);
+      recorded.permissions.push(o.permissions);
       return Promise.resolve({
         sessionId: o.sessionId ?? 'gen',
         url,
@@ -108,6 +114,20 @@ describe('reticle_lease acquire with production', () => {
     );
     expect(recorded.guard?.('GET', 'https://app.example.com/v1/runs')).toBeUndefined();
     expect(result.production?.scope).toBe(HelloScope.ACT);
+  });
+
+  // A public page reaching ws://127.0.0.1 needs Local Network Access, and a leased browser has no
+  // person to answer the prompt. Granted on this lease's origin only, not by a launch flag: a second
+  // --disable-features would replace the list Playwright launches with.
+  it('grants local network access on the site origin, beside what the caller asked for', async () => {
+    serveTicket(200, { ticket: 't' });
+    const recorded = fakePool();
+    await acquire(depsWith(recorded.pool, nonces()), {
+      url: SITE,
+      production,
+      permissions: ['clipboard-read'],
+    });
+    expect(recorded.permissions[0]).toEqual(['clipboard-read', 'local-network-access']);
   });
 
   it('says the server does not offer production mode, and opens nothing', async () => {

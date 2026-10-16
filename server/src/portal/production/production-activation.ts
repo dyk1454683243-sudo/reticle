@@ -231,3 +231,21 @@ export function summary(activated: Activation | undefined): {
     ? {}
     : { production: { scope: activated.scope, expiresAt: activated.expiresAt } };
 }
+
+/** Playwright's name for Chrome's Local Network Access grant (local + loopback network). */
+const LOCAL_NETWORK_ACCESS = 'local-network-access';
+
+/**
+ * The permissions a lease is opened with. A production page on a public origin dials the bridge on
+ * loopback, which Chromium blocks unless a person grants Local Network Access, and a leased browser
+ * has no person. Granted on the lease's own origin only. Not a launch flag: a second
+ * `--disable-features` replaces the list Playwright launches with instead of adding to it.
+ */
+export function leasePermissions(
+  asked: readonly string[] | undefined,
+  production: unknown,
+): readonly string[] | undefined {
+  if (production === undefined) return asked;
+  const granted = asked ?? [];
+  return granted.includes(LOCAL_NETWORK_ACCESS) ? granted : [...granted, LOCAL_NETWORK_ACCESS];
+}
