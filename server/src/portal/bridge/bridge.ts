@@ -28,6 +28,7 @@ import {
 import { Session } from '@/portal/session/session.js';
 import { SessionManager } from '@/portal/session/session-manager.js';
 import { SessionNonces } from './session-nonces.js';
+import { admitHello } from '@/portal/production/production-hello.js';
 import { tokensMatch } from './token-auth.js';
 import { noteWrongPathUpgrades, wrongPathReason } from './wrong-path.js';
 import { harnessRequest, type HarnessRequest } from './harness-request.js';
@@ -614,6 +615,13 @@ export class Bridge {
             socket.close(WS_CLOSE.AUTH_FAILED[0], reason);
             return;
           }
+          // The nonce decides whether this is a production session, never the page's own claim.
+          const admission = admitHello(parsed, grant?.production);
+          if (!admission.ok) {
+            this.sessions.noteClosure(admission.reason, this.#clock(), { url: parsed.url });
+            socket.close(1008, admission.reason);
+            return;
+          }
           // A window the agent detached stays detached across its own reloads. See SessionManager.park.
           if (this.sessions.isParked(parsed.sessionId)) {
             socket.close(1008, SESSION_PARKED_REASON);
@@ -627,6 +635,7 @@ export class Bridge {
           clearTimeout(helloTimer);
           releasePending();
           session = new Session(parsed, socket, this.#clock);
+          session.production = admission.production;
           // Recorded on ACCEPTANCE, so it is evidence of what this daemon really serves.
           if (parsed.projectId !== undefined) this.#servedProjects.add(parsed.projectId);
           // Attach the durable journal (and anything else registered) before any events stream in.

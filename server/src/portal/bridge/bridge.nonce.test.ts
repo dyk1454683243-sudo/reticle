@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { MessageKind, RETICLE_PROTOCOL_VERSION, RETICLE_WS_PATH } from '@reticlehq/core';
+import {
+  HelloEnv,
+  HelloScope,
+  MessageKind,
+  RETICLE_PROTOCOL_VERSION,
+  RETICLE_WS_PATH,
+} from '@reticlehq/core';
 import { Bridge } from './bridge.js';
 
 const MACHINE_TOKEN = 'machine-pairing-token';
@@ -14,8 +20,13 @@ afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.close()));
 });
 
-function hello(sessionId: string, token: string): Record<string, unknown> {
+function hello(
+  sessionId: string,
+  token: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
+    ...extra,
     kind: MessageKind.HELLO,
     protocolVersion: RETICLE_PROTOCOL_VERSION,
     sessionId,
@@ -47,6 +58,7 @@ async function sayHello(
   port: number,
   sessionId: string,
   token: string,
+  extra: Record<string, unknown> = {},
 ): Promise<'accepted' | number> {
   const socket = await openSocket(port, PROD_ORIGIN);
   return new Promise((resolve) => {
@@ -58,7 +70,7 @@ async function sayHello(
       }
     }, 10);
     socket.once('close', () => clearInterval(poll));
-    socket.send(JSON.stringify(hello(sessionId, token)));
+    socket.send(JSON.stringify(hello(sessionId, token, extra)));
   });
 }
 
@@ -88,5 +100,23 @@ describe('a session nonce on the bridge', () => {
   it('never admits a public origin without a live nonce for it', async () => {
     const { port } = await makeBridge();
     await expect(openSocket(port, PROD_ORIGIN)).rejects.toThrow(/403/);
+  });
+
+  it('refuses a production HELLO that carries the machine pairing token', async () => {
+    const { bridge, port } = await makeBridge();
+    bridge.nonces.mint({ origin: PROD_ORIGIN });
+    const production = { env: HelloEnv.PRODUCTION, scope: HelloScope.ACT };
+    expect(await sayHello(bridge, port, 'tab-1', MACHINE_TOKEN, production)).toBe(1008);
+  });
+
+  it('opens a production session from a production nonce, with the scope it granted', async () => {
+    const { bridge, port } = await makeBridge();
+    const { nonce } = bridge.nonces.mint({
+      origin: PROD_ORIGIN,
+      production: { scope: HelloScope.OBSERVE },
+    });
+    const production = { env: HelloEnv.PRODUCTION, scope: HelloScope.ACT };
+    expect(await sayHello(bridge, port, 'tab-1', nonce, production)).toBe('accepted');
+    expect(bridge.sessions.get('tab-1')?.production).toEqual({ scope: HelloScope.OBSERVE });
   });
 });

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import type { ProductionMode } from '@/portal/production/production-hello.js';
 
 /**
  * Single-use HELLO tokens with a time limit, accepted beside the machine's pairing token.
@@ -22,11 +23,14 @@ export interface NonceGrant {
   /** The page origin this nonce was minted for. The bridge admits a WebSocket from it. */
   origin?: string;
   expiresAt: number;
+  /** Set when the nonce was minted for a production drive. The session then runs under the policy. */
+  production?: ProductionMode;
 }
 
 export interface MintOptions {
   origin?: string;
   ttlMs?: number;
+  production?: ProductionMode;
 }
 
 interface Entry extends NonceGrant {
@@ -50,6 +54,7 @@ export class SessionNonces {
     const expiresAt = this.#clock() + (options.ttlMs ?? SESSION_NONCE_TTL_MS);
     this.#entries.set(nonce, {
       ...(options.origin === undefined ? {} : { origin: options.origin }),
+      ...(options.production === undefined ? {} : { production: options.production }),
       expiresAt,
     });
     return { nonce, expiresAt };

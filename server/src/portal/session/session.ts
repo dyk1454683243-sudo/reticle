@@ -4,6 +4,7 @@ import { asProjectId, type ChannelId, type ImpactSnapshot, type ProjectId } from
 import { narrationArgs, type NarrationBy } from './narration-args.js';
 import type { HandshakeFacts } from './facts/handshake-facts.js';
 import { refusedResult } from './page-commands/undeclared-command.js';
+import type { ProductionMode } from '@/portal/production/production-hello.js';
 import { impactSnapshot, recordImpact } from '@/memory/impact/impact-recorder.js';
 import { callingAgent } from '@/hooks/coding-agents.js';
 import { recordNotes } from './human/notes-ledger.js';
@@ -186,6 +187,8 @@ export class Session implements HandshakeFacts {
    */
   #editEpoch: number | undefined;
   readonly #departureNote = new DepartureNote();
+  /** Set when a production nonce opened this session: every act then passes the production policy. */
+  production: ProductionMode | undefined;
 
   constructor(hello: HelloMessage, socket: WebSocket, clock: Clock) {
     this.id = hello.sessionId;
