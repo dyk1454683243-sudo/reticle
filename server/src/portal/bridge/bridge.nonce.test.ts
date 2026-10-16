@@ -4,6 +4,9 @@ import {
   HelloEnv,
   HelloScope,
   MessageKind,
+  PRODUCTION_REFUSAL_PREFIX,
+  ProductionRule,
+  ReticleCommand,
   RETICLE_PROTOCOL_VERSION,
   RETICLE_WS_PATH,
 } from '@reticlehq/core';
@@ -117,6 +120,23 @@ describe('a session nonce on the bridge', () => {
     });
     const production = { env: HelloEnv.PRODUCTION, scope: HelloScope.ACT };
     expect(await sayHello(bridge, port, 'tab-1', nonce, production)).toBe('accepted');
-    expect(bridge.sessions.get('tab-1')?.production).toEqual({ scope: HelloScope.OBSERVE });
+    expect(bridge.sessions.get('tab-1')?.production?.scope).toBe(HelloScope.OBSERVE);
+  });
+
+  it('refuses an act on a production session where it is dispatched, and sends nothing', async () => {
+    const { bridge, port } = await makeBridge();
+    const { nonce } = bridge.nonces.mint({
+      origin: PROD_ORIGIN,
+      production: { scope: HelloScope.OBSERVE },
+    });
+    const production = { env: HelloEnv.PRODUCTION, scope: HelloScope.OBSERVE };
+    expect(await sayHello(bridge, port, 'tab-1', nonce, production)).toBe('accepted');
+    const session = bridge.sessions.get('tab-1');
+    const sent: string[] = [];
+    for (const socket of sockets) socket.on('message', (raw: Buffer) => sent.push(raw.toString()));
+    const result = await session?.command(ReticleCommand.ACT, { ref: 'e1', action: 'click' });
+    expect(result?.ok).toBe(false);
+    expect(result?.error).toContain(`${PRODUCTION_REFUSAL_PREFIX}${ProductionRule.OBSERVE_ONLY}`);
+    expect(sent.filter((frame) => frame.includes('"act"'))).toEqual([]);
   });
 });

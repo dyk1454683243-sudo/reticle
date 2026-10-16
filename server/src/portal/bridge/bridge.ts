@@ -636,6 +636,8 @@ export class Bridge {
           releasePending();
           session = new Session(parsed, socket, this.#clock);
           session.production = admission.production;
+          const drive = admission.production;
+          if (drive !== undefined) session.onEvent((event) => drive.noteEvent(event));
           // Recorded on ACCEPTANCE, so it is evidence of what this daemon really serves.
           if (parsed.projectId !== undefined) this.#servedProjects.add(parsed.projectId);
           // Attach the durable journal (and anything else registered) before any events stream in.

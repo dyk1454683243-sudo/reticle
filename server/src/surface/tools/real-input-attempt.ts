@@ -39,6 +39,7 @@ import {
   unspellablePressReason,
 } from '@/portal/input/real-input.js';
 import { assertDragNotDestructive, assertNotDestructive } from './act/act-danger.js';
+import { assertNativeAllowed } from '@/portal/production/production-drive.js';
 import { NATIVE_INPUT_ARG } from '@reticlehq/core';
 import { asNumber, asRecord, asString } from '@reticlehq/core';
 import { type ToolDeps, commandOrThrow } from './tool-kit.js';
@@ -615,6 +616,7 @@ export async function tryRealInput(
   const { inspected } = source;
   let { scrolled } = source;
   assertNotDestructive(action, inner, inspected);
+  await assertNativeAllowed(session.production, action, inspected);
   let box = asBox(inspected);
   // A box outside the viewport after the reveal is a gesture that would land on nothing. The
   // synthetic path scrolls and hit-tests on its own, so it is the honest answer.

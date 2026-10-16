@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { HelloEnv, HelloScope } from '@reticlehq/core';
 import { admitHello, PRODUCTION_HELLO_REFUSED } from './production-hello.js';
+import { ProductionDrive } from './production-drive.js';
 
-const ACT = { scope: HelloScope.ACT };
+const granted = (scope: HelloScope): ProductionDrive =>
+  new ProductionDrive({ scope, expiresAt: Number.MAX_SAFE_INTEGER }, () => 0);
+const scopeOf = (admission: ReturnType<typeof admitHello>): HelloScope | undefined =>
+  admission.ok ? admission.production?.scope : undefined;
 
 describe('which HELLO may open a production session', () => {
   it('leaves a development HELLO without a production nonce as it was', () => {
@@ -17,27 +21,32 @@ describe('which HELLO may open a production session', () => {
   });
 
   it('refuses a production HELLO that does not name its scope', () => {
-    expect(admitHello({ env: HelloEnv.PRODUCTION }, ACT).ok).toBe(false);
+    expect(admitHello({ env: HelloEnv.PRODUCTION }, granted(HelloScope.ACT)).ok).toBe(false);
   });
 
   it('opens a production session with the scope the nonce granted', () => {
-    expect(admitHello({ env: HelloEnv.PRODUCTION, scope: HelloScope.ACT }, ACT)).toEqual({
-      ok: true,
-      production: { scope: HelloScope.ACT },
-    });
+    const admission = admitHello(
+      { env: HelloEnv.PRODUCTION, scope: HelloScope.ACT },
+      granted(HelloScope.ACT),
+    );
+    expect(scopeOf(admission)).toBe(HelloScope.ACT);
   });
 
   it('lets the page narrow act to observe, and never widen observe to act', () => {
-    const narrowed = admitHello({ env: HelloEnv.PRODUCTION, scope: HelloScope.OBSERVE }, ACT);
-    expect(narrowed).toEqual({ ok: true, production: { scope: HelloScope.OBSERVE } });
+    const drive = granted(HelloScope.ACT);
+    const narrowed = admitHello({ env: HelloEnv.PRODUCTION, scope: HelloScope.OBSERVE }, drive);
+    expect(scopeOf(narrowed)).toBe(HelloScope.OBSERVE);
+    // The same tab reconnecting with `act` stays narrowed.
+    const again = admitHello({ env: HelloEnv.PRODUCTION, scope: HelloScope.ACT }, drive);
+    expect(scopeOf(again)).toBe(HelloScope.OBSERVE);
     const widened = admitHello(
       { env: HelloEnv.PRODUCTION, scope: HelloScope.ACT },
-      { scope: HelloScope.OBSERVE },
+      granted(HelloScope.OBSERVE),
     );
-    expect(widened).toEqual({ ok: true, production: { scope: HelloScope.OBSERVE } });
+    expect(scopeOf(widened)).toBe(HelloScope.OBSERVE);
   });
 
   it('keeps a production nonce production even when the page claims development', () => {
-    expect(admitHello({}, ACT)).toEqual({ ok: true, production: { scope: HelloScope.ACT } });
+    expect(scopeOf(admitHello({}, granted(HelloScope.ACT)))).toBe(HelloScope.ACT);
   });
 });

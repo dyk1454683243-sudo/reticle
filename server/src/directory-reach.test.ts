@@ -813,6 +813,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'oracles',
     'pool',
     'prior',
+    // A production drive judges a native click too, and its lease asks the service for a ticket.
+    'production',
     'project',
     'read',
     'recording',
