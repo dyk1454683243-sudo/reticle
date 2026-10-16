@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { HelloScope } from './hello-mode.js';
 
 /**
  * The production action policy: what a drive on a live site may not do unless its intent says so.
@@ -108,3 +109,30 @@ export const PRODUCTION_REFUSAL_PREFIX = 'refused: production policy: ';
 export const productionRefusal = (rule: ProductionRule): string =>
   `${PRODUCTION_REFUSAL_PREFIX}${rule}. A production drive does this only when its declared ` +
   'intent names it (reticle_lease production.intent).';
+
+// ── The activation ticket: daemon -> service ───────────────────────────────────────────────────
+
+/** The service route that issues an activation ticket, authenticated with the person's API key. */
+export const PRODUCTION_TICKET_PATH = '/v1/production-mode/tickets';
+/** The query parameter the lease opens the site with. The service strips it after redeeming. */
+export const PRODUCTION_ACTIVATE_PARAM = 'reticle_activate';
+
+export const ProductionTicketRequestSchema = z.object({
+  workspaceId: z.string().min(1).max(128),
+  /** The single-use HELLO token the daemon minted for this drive. */
+  nonce: z.string().min(1).max(256),
+  /** The daemon's bridge port. The service puts it in the page's bootstrap and its CSP. */
+  bridgePort: z.number().int().min(1).max(65535),
+  scope: z.nativeEnum(HelloScope),
+});
+export type ProductionTicketRequest = z.infer<typeof ProductionTicketRequestSchema>;
+
+export const ProductionTicketResponseSchema = z.object({
+  /** Opaque and signed by the service. The lease opens `<url>?reticle_activate=<ticket>`. */
+  ticket: z.string().min(1).max(4096),
+  /** When the ticket must be redeemed by (ISO 8601). Informational. */
+  expiresAt: z.string().max(64).optional(),
+  /** The service's own refused requests for this drive. Absent: `DEFAULT_PRODUCTION_POLICY`. */
+  policy: ProductionPolicySchema.optional(),
+});
+export type ProductionTicketResponse = z.infer<typeof ProductionTicketResponseSchema>;

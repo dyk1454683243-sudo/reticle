@@ -165,7 +165,7 @@ const MIN_CREATED_ID_LENGTH = 4;
 export class ProductionDrive {
   #scope: HelloScope;
   readonly #intentAllows: ReadonlySet<LiftableProductionRule>;
-  readonly #policy: readonly ProductionPolicyEntry[];
+  #policy: readonly ProductionPolicyEntry[];
   readonly #origin: string | undefined;
   readonly #expiresAt: number;
   readonly #clock: () => number;
@@ -185,6 +185,11 @@ export class ProductionDrive {
 
   get scope(): HelloScope {
     return this.#scope;
+  }
+
+  /** The service's refused requests, from the ticket. Set before the page opens. */
+  setPolicy(policy: readonly ProductionPolicyEntry[]): void {
+    this.#policy = policy;
   }
 
   /** A page may narrow its drive to observing. Nothing widens it again. */

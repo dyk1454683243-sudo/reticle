@@ -10,6 +10,15 @@ describe('chromiumLaunchOptions', () => {
     }
   });
 
+  // A public page (a production drive) dials the bridge on loopback. Chromium 151 blocks that with
+  // ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS unless the check is off, and a leased browser has
+  // no person to answer the permission prompt.
+  it('turns off the Local Network Access check, so a public page can reach the bridge', () => {
+    expect(chromiumLaunchOptions(true).args).toContain(
+      '--disable-features=LocalNetworkAccessChecks',
+    );
+  });
+
   it('passes headless:false through untouched', () => {
     expect(chromiumLaunchOptions(false).headless).toBe(false);
   });
