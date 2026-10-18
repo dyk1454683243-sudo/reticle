@@ -152,6 +152,23 @@ describe('the production action policy', () => {
     );
   });
 
+  it('never lets an intent lift observe, leaving the origin, or an expired nonce', async () => {
+    const intent = 'invite a teammate, pay for the upgrade, then go to https://pay.example.org/';
+    const plain = showing({ role: 'button', name: 'Send invite' });
+    const observe = drive({ scope: HelloScope.OBSERVE, intent });
+    expect(await observe.refuseCommand(ReticleCommand.ACT, click, plain)).toContain(
+      refusalOf(ProductionRule.OBSERVE_ONLY),
+    );
+    const away = { url: 'https://pay.example.org/' };
+    expect(await drive({ intent }).refuseCommand(ReticleCommand.NAVIGATE, away, plain)).toContain(
+      refusalOf(ProductionRule.OFF_ORIGIN),
+    );
+    const expired = drive({ intent, expiresAt: NOW });
+    expect(await expired.refuseCommand(ReticleCommand.ACT, click, plain)).toContain(
+      refusalOf(ProductionRule.EXPIRED),
+    );
+  });
+
   it('allows deleting what the drive itself created, and only that', async () => {
     const d = drive();
     const created: ReticleEvent = {

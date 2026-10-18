@@ -147,6 +147,22 @@ describe('activating a production drive', () => {
       }),
     ).rejects.toThrow(/production/);
   });
+
+  it('refuses a ticket whose policy is unbounded or not a pattern, and opens nothing', async () => {
+    const entry = { rule: ProductionRule.SEND_INVITE, methods: ['POST'], path: '/invites' };
+    for (const policy of [Array.from({ length: 65 }, () => entry), [{ ...entry, path: '(' }]]) {
+      await expect(
+        activateProduction({
+          production: ask,
+          url: SITE,
+          nonces: nonces(),
+          bridgePort: 4400,
+          cloud: () => Promise.resolve(CLOUD),
+          fetch: server(200, { ticket: 't', policy }).fetch,
+        }),
+      ).rejects.toThrow(/not a ticket/);
+    }
+  });
 });
 
 describe('a production lease', () => {
