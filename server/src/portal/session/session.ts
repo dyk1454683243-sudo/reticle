@@ -70,7 +70,6 @@ import { notedAct, probeMarkers, withInstrumentation } from './recorded-gaps.js'
 import { MAX_SUCCESSOR_HOPS, REBINDABLE_COMMANDS } from './rebind.js';
 
 type Clock = () => number;
-type Args = Record<string, unknown>;
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 8000;
 
@@ -667,15 +666,13 @@ export class Session implements HandshakeFacts {
     timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
   ): Promise<CommandResult> {
     // The production policy decides here, where every driven action passes, and never in the page.
-    const drive = this.production;
-    if (drive === undefined) return this.#dispatch(name, args, timeoutMs);
-    return drive.gate(name, args, (n, a) => this.#dispatch(n, a, timeoutMs));
+    if (this.production === undefined) return this.#dispatch(name, args, timeoutMs);
+    return this.production.gate(name, args, (n, a) => this.#dispatch(n, a, timeoutMs));
   }
 
-  #dispatch(name: string, args: Args, timeoutMs: number): Promise<CommandResult> {
-    // Recorded HERE, the one place every driven action passes (act_sequence and flow replay too;
-    // per-tool counting missed both and under-counted "exercised"). A reload sent from here is ours,
-    // so the page coming back is not read as a person reloading mid-drive.
+  #dispatch(name: string, args: Record<string, unknown>, ms: number): Promise<CommandResult> {
+    // Recorded here, where every driven action passes (act_sequence and flow replay too). A reload
+    // sent from here is ours, so the page coming back is not a person reloading mid-drive.
     const ref = args['ref'];
     if (name === ReticleCommand.ACT && 'string' === typeof ref) this.recordActedRef(ref);
     if (name === ReticleCommand.REFRESH) noteOwnReload(this.id, this.#clock());
@@ -687,13 +684,13 @@ export class Session implements HandshakeFacts {
     // command to the live connection cannot perform anything twice — it is the call the agent would
     // have made itself after a `reticle_sessions` round trip, minus the round trip.
     const successor = this.#liveSuccessor();
-    if (successor !== undefined) return successor.command(name, args, timeoutMs);
+    if (successor !== undefined) return successor.command(name, args, ms);
     const id = this.#pending.nextId(COMMAND_ID_PREFIX);
     const payload = commandPayload(id, this.id, name, args);
     // The timeout message is built LAZILY: health can change while a command is in flight, and the
     // diagnosis should describe the page as it was when the command actually gave up.
-    const awaited = this.#pending.track(id, timeoutMs, () =>
-      commandTimeoutMessage(name, timeoutMs, {
+    const awaited = this.#pending.track(id, ms, () =>
+      commandTimeoutMessage(name, ms, {
         url: this.url,
         hidden: this.#hidden,
         lastSeenMs: this.lastSeenMs(),
@@ -729,7 +726,7 @@ export class Session implements HandshakeFacts {
         // timeout means a caller who granted 8s can wait 16, and across a chain of replacements the
         // total is unbounded — a wait nobody asked for, on the path that exists to save a round trip.
         // A budget already spent means there is nothing left to retry into, so the error stands.
-        const remaining = timeoutMs - (Date.now() - sentAt);
+        const remaining = ms - (Date.now() - sentAt);
         if (remaining <= 0) throw error;
         return next.command(name, args, remaining);
       });
