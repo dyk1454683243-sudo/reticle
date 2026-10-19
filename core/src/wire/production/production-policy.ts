@@ -107,8 +107,11 @@ export const DEFAULT_PRODUCTION_POLICY: readonly ProductionPolicyEntry[] = [
 /** What the refusal says. Every refusal is this sentence; nothing is a silent no-op. */
 export const PRODUCTION_REFUSAL_PREFIX = 'refused: production policy: ';
 export const productionRefusal = (rule: ProductionRule): string =>
-  `${PRODUCTION_REFUSAL_PREFIX}${rule}. A production drive does this only when its declared ` +
-  'intent names it (reticle_lease production.intent).';
+  `${PRODUCTION_REFUSAL_PREFIX}${rule}. ` +
+  ((LIFTABLE_PRODUCTION_RULES as readonly string[]).includes(rule)
+    ? 'A production drive does this only when its declared intent names it ' +
+      '(reticle_lease production.intent).'
+    : 'No intent allows this.');
 
 // ── The activation ticket: daemon -> service ───────────────────────────────────────────────────
 

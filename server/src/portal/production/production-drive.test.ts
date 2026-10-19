@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { RECOVERY, recoveryFor } from '@/surface/tools/error-recovery.js';
 import {
   ActionType,
   EventType,
   HelloScope,
   PRODUCTION_REFUSAL_PREFIX,
   ProductionRule,
+  productionRefusal,
   ReticleCommand,
   type ReticleEvent,
 } from '@reticlehq/core';
@@ -250,5 +252,31 @@ describe('a native gesture on a production drive', () => {
     await expect(
       assertNativeAllowed(undefined, ActionType.CLICK, { name: 'Send invite' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// What an agent is told after the production policy refuses an act.
+//
+// Every refusal names `reticle_lease`, so the catch-all for messages about our own API claimed it and
+// answered "That call did not match the tool's schema … retry with the corrected argument". The call
+// was valid. That answer sent the agent to retry an action the policy will refuse every time. And an
+// observe-scope refusal said an intent could allow the act, which no intent can.
+describe('a production policy refusal', () => {
+  it('gets the policy recovery, never the bad-arguments one', () => {
+    for (const rule of Object.values(ProductionRule)) {
+      expect(recoveryFor(productionRefusal(rule)), rule).toBe(RECOVERY.PRODUCTION_POLICY);
+    }
+  });
+
+  it('offers the intent only for a rule an intent can lift', () => {
+    expect(productionRefusal(ProductionRule.SEND_INVITE)).toMatch(/intent/);
+    for (const rule of [
+      ProductionRule.OBSERVE_ONLY,
+      ProductionRule.OFF_ORIGIN,
+      ProductionRule.EXPIRED,
+    ]) {
+      expect(productionRefusal(rule), rule).not.toMatch(/only when its declared intent names it/);
+      expect(productionRefusal(rule), rule).toMatch(/No intent allows this/);
+    }
   });
 });

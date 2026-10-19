@@ -11,6 +11,7 @@
 
 import {
   CodedRefusalSchema,
+  PRODUCTION_REFUSAL_PREFIX,
   RefusalCode,
   RefusalReason,
   ReticleEnv,
@@ -200,6 +201,12 @@ export const RECOVERY = {
     'and the change event that follows has been observed persisting an empty setting into the app. ' +
     'Retry with one of the listed values — note they are option VALUES, which often differ from the ' +
     'visible labels shown in brackets. This is an invalid call, not a Reticle defect.',
+  PRODUCTION_POLICY:
+    'The production policy refused this act before it reached the site, and nothing was done. The ' +
+    'call itself was valid. Do not retry it: the policy refuses it every time. Leave this step out, ' +
+    'or, when the message names an intent, end the lease and acquire a new one whose ' +
+    '`production.intent` names the action. This is a refusal by design, not a Reticle defect: there ' +
+    'is nothing to report.',
   BAD_ARGUMENTS:
     "That call did not match the tool's schema — the message above names the tool and the exact " +
     "argument it wanted. Re-read that tool's parameters and retry with the missing or corrected " +
@@ -359,6 +366,8 @@ const REASON_OF: Record<keyof typeof RECOVERY, RefusalReason> = {
   NOT_EDITABLE: RefusalReason.UNSUPPORTED,
   CONFIRM_DANGEROUS: RefusalReason.UNSUPPORTED,
   WRONG_TARGET: RefusalReason.UNSUPPORTED,
+  // The call was valid; the drive's policy refuses what it asked for, as for a destructive control.
+  PRODUCTION_POLICY: RefusalReason.UNSUPPORTED,
   BAD_ARGUMENTS: RefusalReason.BAD_ARGS,
   INVALID_NAME: RefusalReason.BAD_ARGS,
   // Nothing about the app or the call is wrong; the feature is switched off or unpaid for.
@@ -472,6 +481,8 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
     match: /target matched \d+ elements and an action must not guess/i,
     hint: RECOVERY.AMBIGUOUS_TARGET,
   },
+  // Before the catch-all: every refusal names `reticle_lease`, and the call was valid.
+  { match: new RegExp(`^${PRODUCTION_REFUSAL_PREFIX}`), hint: RECOVERY.PRODUCTION_POLICY },
   // Authored by Reticle, about the caller's arguments: the message already names the valid answers.
   { match: /^unknown action '/i, hint: RECOVERY.BAD_ARGUMENTS },
   { match: /^unsupported query strategy '/i, hint: RECOVERY.BAD_ARGUMENTS },

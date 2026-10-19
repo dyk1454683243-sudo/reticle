@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MessageKind, RETICLE_PROTOCOL_VERSION } from '@/index.js';
 import { HelloMessageSchema } from './messages.js';
-import { HelloEnv, HelloScope } from './constants/hello-mode.js';
+import { HelloEnv, HelloScope } from './production/hello-mode.js';
 
 const base = {
   kind: MessageKind.HELLO,
