@@ -10,6 +10,7 @@ import { SessionNonces } from '@/portal/bridge/session-nonces.js';
 import {
   activateProduction,
   leaseWithoutInjection,
+  notActivatedHint,
   PRODUCTION_MODE_NOT_LINKED,
   PRODUCTION_MODE_NOT_OFFERED,
   type TicketFetch,
@@ -172,5 +173,14 @@ describe('a production lease', () => {
     const without = leaseWithoutInjection(lease);
     expect(without).not.toHaveProperty('injectReader');
     expect(without.isLoading).toBe(isLoading);
+  });
+
+  // A fresh leased browser is signed out, so the service refused the ticket and the page never
+  // connected. The hint blamed the page's CSP and said to allow the bridge for development only.
+  it('names the signed-out browser when an activated page never connects, never the CSP', () => {
+    const hint = notActivatedHint(SITE);
+    expect(hint).toMatch(/signed in/);
+    expect(hint).toMatch(/seedStorage/);
+    expect(hint).not.toMatch(/Content-Security-Policy|connect-src/);
   });
 });

@@ -10,6 +10,8 @@ Production mode lets an agent drive a live site, not only a development build. I
 
 - A Reticle service that issues activation tickets (`POST /v1/production-mode/tickets`). A service without this route answers 404, and the lease says "the server does not offer production mode".
 - This project linked to that service: `reticle connect`, or `RETICLE_API_KEY`.
+- A site whose server redeems the ticket. The service signs the ticket, and only that service can check it. Today the Reticle dashboard is the only site that does this. Another site cannot start production mode yet.
+- A browser that is signed in to the site, as the person whose API key asks for the ticket. The service redeems a ticket only for that person, in that workspace. A leased browser starts signed out, so give the lease your session cookies in `seedStorage` (see below).
 - The site loads `@reticlehq/browser` lazily, only when an activation is present, and calls:
 
   ```ts
@@ -31,6 +33,7 @@ One `reticle_lease` call does it:
 {
   "action": "acquire",
   "url": "https://app.example.com/",
+  "seedStorage": { "cookies": { "<session cookie name>": "<value>" } },
   "production": {
     "workspaceId": "ws_123",
     "scope": "act",
@@ -44,6 +47,8 @@ The daemon then does three things:
 1. It mints a single-use session nonce for the site's origin. The nonce expires after 60 minutes.
 2. It asks the service for a ticket with the linked API key: `{ workspaceId, nonce, bridgePort, scope }`. The service decides who may activate, and signs the ticket.
 3. It opens `https://app.example.com/?reticle_activate=<ticket>` in a leased browser.
+
+If no page connects, the lease answers `ready: false`. The usual cause is a signed-out browser: the service refused the ticket, and the page loaded without an activation. Release the lease, then acquire again with your session cookies in `seedStorage`.
 
 The page connects with the nonce. The daemon accepts a production HELLO only with a live production nonce, never with the machine's pairing token. The first tab that presents the nonce owns it. That tab can reconnect after a reload. Another tab is refused.
 

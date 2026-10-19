@@ -702,7 +702,9 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
               ? leaseReaderFailedHint(url, readerFailure)
               : true === stillLoading
                 ? leaseStillLoadingHint(url, Date.now() - waitStartedAt)
-                : await notConnectedHint(deps, url, pool.dialFailureUrl?.(lease.sessionId)),
+                : activated !== undefined
+                  ? production.notActivatedHint(url)
+                  : await notConnectedHint(deps, url, pool.dialFailureUrl?.(lease.sessionId)),
           ready ? await notificationReadBack(pool, lease.sessionId, permissions) : undefined,
         ),
       };

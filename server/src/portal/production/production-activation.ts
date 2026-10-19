@@ -232,6 +232,21 @@ export function summary(activated: Activation | undefined): {
     : { production: { scope: activated.scope, expiresAt: activated.expiresAt } };
 }
 
+/**
+ * Why an activated page never connected. The service redeems a ticket only for a browser signed in
+ * as the person who asked for it, and a leased browser starts signed out. The generic diagnosis
+ * blamed the page's CSP and said to allow the bridge for development only, which is wrong here.
+ */
+export function notActivatedHint(url: string): string {
+  return (
+    `${url} did not start production mode: no page connected with the session nonce. The ` +
+    'service redeems the activation ticket only for a browser signed in as you, in the workspace ' +
+    'the lease names, and a leased browser starts signed out. Release this lease, then acquire ' +
+    'again with your session cookies for this site in seedStorage { cookies }. When the browser is ' +
+    'signed in, the site did not load the SDK on the activated page (docs/production-mode.md).'
+  );
+}
+
 /** Playwright's name for Chrome's Local Network Access grant (local + loopback network). */
 const LOCAL_NETWORK_ACCESS = 'local-network-access';
 
