@@ -111,6 +111,9 @@ const ORDER = [
   // tests prove install order against a fake page; only a real browser can prove the page saw it.
   // Serves its own fixture page, like the permissions spec above.
   'lease-init-script-test',
+  // A refused request stopped in a real Chromium before it leaves, under the production policy.
+  // Serves its own page, like the two specs above.
+  'lease-production-guard-test',
   'atlas-hard-fixture-test',
   // Drives a real session and then checks that the EVENTS describe it — a different question from
   // telemetry-events-test, which only proves each kind can be sent. Owns a browser and writes a flow,
