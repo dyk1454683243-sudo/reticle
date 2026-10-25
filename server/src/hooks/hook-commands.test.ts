@@ -158,6 +158,26 @@ describe('reading .reticle/hooks.json', () => {
     );
   });
 
+  // The cache keyed only on mtime. Two roots written in the same millisecond then
+  // shared one config, and the second read returned the first root's commands. A
+  // filesystem with coarse timestamps does this on every read.
+  it('does not return another directory hooks when the mtimes match', () => {
+    const other = mkdtempSync(join(tmpdir(), 'reticle-hooks-other-'));
+    roots.push(other);
+    const stamp = new Date('2020-01-01T00:00:00.000Z');
+    const plant = (dir: string, body: string): void => {
+      const file = join(dir, ReticleDir.HOOKS_FILE);
+      writeFileSync(file, body);
+      utimesSync(file, stamp, stamp);
+    };
+    plant(root, JSON.stringify({ [HookEvent.VERDICT]: 'echo here' }));
+    plant(other, JSON.stringify({ [HookEvent.BUG_FOUND]: 'echo there' }));
+    expect(readHookConfig(root)[HookEvent.VERDICT]).toBe('echo here');
+    const there = readHookConfig(other);
+    expect(there[HookEvent.BUG_FOUND]).toBe('echo there');
+    expect(there[HookEvent.VERDICT]).toBeUndefined();
+  });
+
   it('survives a malformed file rather than taking the daemon with it', () => {
     writeFileSync(join(root, ReticleDir.HOOKS_FILE), '{not json');
     expect(() => readHookConfig(root)).not.toThrow();
