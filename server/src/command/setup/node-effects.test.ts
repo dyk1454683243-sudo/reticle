@@ -215,6 +215,38 @@ describe('probing the page', () => {
     expect(await probePage('http://127.0.0.1:59233/')).toMatchObject({ served: false });
   });
 
+  // break-matrix `dev-server-serves-only-a-base-path`: `/` is a plain 404 and `/admin` is
+  // the app. "nothing is serving <url>/admin" is only true when the fetch throws. A 404 at
+  // the root is an answer, and so is the page under test (run 40151192300 scored the
+  // first sentence against a server that was supposed to be this one).
+  it('reports a base-path url as served when the root is a plain 404', async () => {
+    const server = http.createServer((req, res) => {
+      const url = req.url ?? '';
+      if (url.startsWith('/admin')) {
+        res.end('<html>app</html>');
+        return;
+      }
+      res.statusCode = 404;
+      res.end('not found');
+    });
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (null === addr || 'string' === typeof addr) reject(new Error('no port'));
+        else resolve(addr.port);
+      });
+    });
+    try {
+      const admin = await probePage(`http://127.0.0.1:${String(port)}/admin`);
+      const root = await probePage(`http://127.0.0.1:${String(port)}/`);
+      expect(admin).toMatchObject({ served: true, sdkInPage: false });
+      expect(root).toMatchObject({ served: true, sdkInPage: false });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('finds an IPv6-only listener when the announcement was IPv4 (#884)', async ({ skip }) => {
     const canBind = await new Promise<boolean>((resolve) => {
       const probe = net.createServer();
