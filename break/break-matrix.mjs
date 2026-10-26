@@ -745,18 +745,27 @@ for (const s of selected) {
   const dir = s.build();
   let side;
   try {
-    if (s.setup !== undefined) side = await s.setup(dir);
+    if (s.setup !== undefined) {
+      side = await s.setup(dir);
+    }
     const { code, out } = await s.run(dir);
     if (UNPUBLISHED.test(out) && !out.includes(s.expect)) {
       rows.push({ name: s.name, ok: false, skipped: true, failures: [], out: '', why: s.why });
       continue;
     }
     const failures = [];
-    if (code === 0) failures.push('exited 0 — a broken machine was reported as a working install');
-    if (STACK.test(out) || CRASH.test(out))
+    if (code === 0) {
+      failures.push('exited 0 — a broken machine was reported as a working install');
+    }
+    if (STACK.test(out) || CRASH.test(out)) {
       failures.push('leaked a stack trace or a raw runtime error');
-    if (!out.includes(s.expect)) failures.push(`never said "${s.expect}"`);
-    if (out.includes('"ok": true')) failures.push('json says ok:true');
+    }
+    if (!out.includes(s.expect)) {
+      failures.push(`never said "${s.expect}"`);
+    }
+    if (out.includes('"ok": true')) {
+      failures.push('json says ok:true');
+    }
     rows.push({
       name: s.name,
       ok: failures.length === 0,
@@ -766,7 +775,9 @@ for (const s of selected) {
       knownWeakness: s.knownWeakness,
     });
   } finally {
-    if (side !== undefined) side.kill();
+    if (side !== undefined) {
+      side.kill();
+    }
     s.cleanup?.(dir);
     // The project daemon `init` starts outlives the scenario and keeps writing `.reticle/` into
     // this directory, so a single rmdir can race it: macOS CI died on ENOTEMPTY here and threw

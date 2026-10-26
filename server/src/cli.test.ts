@@ -473,7 +473,9 @@ describe('parseCliArgs', () => {
     ]) {
       const r = parseCliArgs(argv, PORT);
       expect(r.kind, argv.join(' ')).toBe('error');
-      if (r.kind !== 'error') throw new Error('unreachable');
+      if (r.kind !== 'error') {
+        throw new Error('unreachable');
+      }
       expect(r.message).toContain('explore');
     }
   });

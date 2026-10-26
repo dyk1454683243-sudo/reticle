@@ -54,7 +54,9 @@ let inFlight = 0;
 const reported = new Set<string>();
 
 function reportOnce(key: string, message: string): void {
-  if (reported.has(key)) return;
+  if (reported.has(key)) {
+    return;
+  }
   reported.add(key);
   log(`hook: ${message}`);
 }
@@ -96,7 +98,9 @@ export function readHookConfig(reticleRoot: string): Record<string, string> {
 
 function readOpenHookConfig(fd: number, path: string): Record<string, string> {
   const mtime = fstatSync(fd).mtimeMs;
-  if (cached !== undefined && cached.path === path && cached.at === mtime) return cached.config;
+  if (cached !== undefined && cached.path === path && cached.at === mtime) {
+    return cached.config;
+  }
   try {
     const parsed = HookConfigSchema.safeParse(JSON.parse(readFileSync(fd, 'utf8')));
     if (!parsed.success) {
@@ -189,7 +193,9 @@ export function runHookCommand(command: string, payload: HookPayload, cwd: strin
 export function installCommandHooks(reticleRoot: string): () => void {
   return onHook(undefined, (payload: HookPayload) => {
     const command = readHookConfig(reticleRoot)[payload.event];
-    if (command === undefined || 0 === command.trim().length) return;
+    if (command === undefined || 0 === command.trim().length) {
+      return;
+    }
     runHookCommand(command, payload, reticleRoot);
   });
 }

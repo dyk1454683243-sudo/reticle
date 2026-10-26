@@ -19,11 +19,6 @@
       "count": 8
     }
   },
-  "src/cli.test.ts": {
-    "curly": {
-      "count": 1
-    }
-  },
   "src/command/cli/adhoc-suite.ts": {
     "curly": {
       "count": 8
@@ -88,11 +83,6 @@
   "src/command/cli/cli-parse-verify.ts": {
     "curly": {
       "count": 14
-    }
-  },
-  "src/command/cli/cli-parse.ts": {
-    "curly": {
-      "count": 39
     }
   },
   "src/command/cli/cli-update-commands.ts": {
@@ -575,11 +565,6 @@
   "src/command/setup/license-key.ts": {
     "curly": {
       "count": 3
-    }
-  },
-  "src/command/setup/node-effects.test.ts": {
-    "curly": {
-      "count": 13
     }
   },
   "src/command/setup/node-effects.ts": {
@@ -1284,16 +1269,6 @@
   "src/hooks/hook-bus.ts": {
     "curly": {
       "count": 1
-    }
-  },
-  "src/hooks/hook-commands.test.ts": {
-    "curly": {
-      "count": 2
-    }
-  },
-  "src/hooks/hook-commands.ts": {
-    "curly": {
-      "count": 3
     }
   },
   "src/import-graph.ts": {

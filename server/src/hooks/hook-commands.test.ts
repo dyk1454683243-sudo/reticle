@@ -69,7 +69,9 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  for (const dir of roots) removeQuietly(dir);
+  for (const dir of roots) {
+    removeQuietly(dir);
+  }
   removeQuietly(sinkHome);
 });
 
@@ -132,7 +134,9 @@ async function waitForFile(path: string, budgetMs = 10_000): Promise<string | un
   while (Date.now() < deadline) {
     if (existsSync(path)) {
       const seen = readFileSync(path, 'utf8');
-      if ('' !== seen.trim()) return seen;
+      if ('' !== seen.trim()) {
+        return seen;
+      }
     }
     await new Promise((r) => setTimeout(r, 25));
   }
