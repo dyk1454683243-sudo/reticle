@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 import { HudPanel, HudPromptSurface, HudToggle, HudView } from './constants/hud-use.js';
 import {
   EventAttribution,
@@ -14,6 +14,7 @@ import { DOCUMENT_ID_LENGTH } from '@/identity/document-identity.js';
 import { NO_EDITS_OBSERVED } from '@/identity/edit-epoch.js';
 import { PlatformProfile } from './platform.js';
 import { ChannelId } from './channel.js';
+import { HelloEnv, HelloInstrumentation, HelloScope } from './production/hello-mode.js';
 import { OutwardAction } from '@/verdict/security.js';
 
 const sessionIdSchema = z.string().min(1).max(TRANSPORT_LIMITS.MAX_SESSION_ID_LENGTH);
@@ -122,7 +123,7 @@ export const ReticleEventSchema = z.object({
    */
   editEpoch: z.number().int().min(NO_EDITS_OBSERVED).optional(),
   /** Event-type-specific payload. Kept open here; refined per observer at the edges. */
-  data: z.record(z.unknown()).default({}),
+  data: z.record(z.string(), z.unknown()).default({}),
 });
 export type ReticleEvent = z.infer<typeof ReticleEventSchema>;
 
@@ -154,6 +155,16 @@ export const HelloMessageSchema = z.object({
     .max(TRANSPORT_LIMITS.MAX_ADAPTERS),
   /** Optional browser/bridge pairing token. Required when the bridge configures one. */
   token: z.string().max(TRANSPORT_LIMITS.MAX_TOKEN_LENGTH).optional(),
+  /**
+   * Where this page runs. ABSENT MEANS `development`: every SDK before this field was a dev build.
+   * The bridge accepts `production` only with a session nonce, never with the pairing token.
+   */
+  env: z.nativeEnum(HelloEnv).optional(),
+  /**
+   * What a drive may do here: `observe` or `act`. Absent means `act` in development. The bridge
+   * refuses a production HELLO without it, and a page can only narrow what its nonce granted.
+   */
+  scope: z.nativeEnum(HelloScope).optional(),
   /**
    * What kind of surface this is: a browser document, a web page in somebody else's window, a
    * native view tree, or no rendering surface at all. See platform.ts.
@@ -234,6 +245,11 @@ export const HelloMessageSchema = z.object({
    */
   sourceMapping: z.boolean().optional(),
   /**
+   * Who put the SDK in this page: `installed` by the app, or `injected` from outside by a hosted
+   * verifier. ABSENT means `installed`. See `HelloInstrumentation`.
+   */
+  instrumentation: z.nativeEnum(HelloInstrumentation).optional(),
+  /**
    * The version of the SDK in the page, so a version-skewed pair can SAY so.
    *
    * `protocolVersion` only catches an incompatible wire format. A 2.2.1 SDK against a 2.4.0 daemon
@@ -281,7 +297,7 @@ export const CommandMessageSchema = z.object({
   id: z.string().min(1).max(TRANSPORT_LIMITS.MAX_COMMAND_ID_LENGTH),
   sessionId: sessionIdSchema.optional(),
   name: z.string().min(1).max(TRANSPORT_LIMITS.MAX_COMMAND_NAME_LENGTH),
-  args: z.record(z.unknown()).default({}),
+  args: z.record(z.string(), z.unknown()).default({}),
   /** Set when the Harness sent it, so the HUD can say who is driving. */
   by: z.nativeEnum(CommandActor).optional(),
   /**

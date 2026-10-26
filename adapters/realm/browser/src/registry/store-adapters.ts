@@ -42,21 +42,58 @@ function snapshotLive(value: unknown): unknown {
 }
 
 function copyPlain(value: unknown, seen: WeakMap<object, unknown>): unknown {
-  if ('object' !== typeof value || null === value) return value;
+  if ('object' !== typeof value || null === value) {
+    return value;
+  }
   const done = seen.get(value);
-  if (done !== undefined) return done;
+  if (done !== undefined) {
+    return done;
+  }
   if (Array.isArray(value)) {
     const out: unknown[] = [];
     seen.set(value, out);
-    for (const item of value) out.push(copyPlain(item, seen));
+    for (const item of value) {
+      out.push(copyPlain(item, seen));
+    }
     return out;
   }
   const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
+  if (proto !== Object.prototype && proto !== null) {
+    return value;
+  }
   const out: Record<string, unknown> = {};
   seen.set(value, out);
-  for (const [key, item] of Object.entries(value)) out[key] = copyPlain(item, seen);
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = copyPlain(item, seen);
+  }
   return out;
+}
+
+/**
+ * Write one part of a TanStack query key as text. A string or a number keeps its form, so saved
+ * state paths do not change. An object or an array becomes JSON with sorted plain-object keys.
+ * TanStack hashes a query key the same way, so two keys that TanStack treats as one query also
+ * give one state path.
+ */
+function queryKeyPart(part: unknown): string {
+  if ('object' !== typeof part || null === part) {
+    return String(part);
+  }
+  return JSON.stringify(part, (_key, value: unknown) => {
+    if ('object' !== typeof value || null === value || Array.isArray(value)) {
+      return value;
+    }
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      return value;
+    }
+    const plain = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(plain).sort()) {
+      sorted[key] = plain[key];
+    }
+    return sorted;
+  });
 }
 
 /** The minimum of TanStack Query's `QueryClient` that this adapter touches. */
@@ -112,7 +149,7 @@ export function tanstackQueryStore(client: QueryClientLike): StoreLike {
     getState: (): Record<string, QuerySnapshot> => {
       const out: Record<string, QuerySnapshot> = {};
       for (const query of client.getQueryCache().getAll()) {
-        const key = query.queryKey.map((part) => String(part)).join('/');
+        const key = query.queryKey.map(queryKeyPart).join('/');
         out[key] = {
           status: query.state.status,
           fetchStatus: query.state.fetchStatus,
@@ -132,6 +169,15 @@ export function tanstackQueryStore(client: QueryClientLike): StoreLike {
   markAdapterSource(store, client);
   return store;
 }
+
+/**
+ * `T`, but TypeScript does not infer `T` from this position. It is `NoInfer` for TypeScript before 5.4.
+ *
+ * The atom map must not set the atom type. Atoms of different value types give a union, and the
+ * library's generic `get` cannot accept a union, so the documented call did not compile. The store
+ * sets the type (`Atom<unknown>` for Jotai, `RecoilValue<unknown>` for Recoil), and each atom fits it.
+ */
+type Deferred<T> = [T][T extends unknown ? 0 : never];
 
 /**
  * The minimum of a Jotai vanilla store this adapter touches, generic in the ATOM type.
@@ -159,17 +205,24 @@ interface JotaiStoreLike<A> {
  * registerStore('app', jotaiStore(getDefaultStore(), { cart: cartAtom, user: userAtom }));
  * ```
  */
-export function jotaiStore<A>(store: JotaiStoreLike<A>, atoms: Record<string, A>): StoreLike {
+export function jotaiStore<A>(
+  store: JotaiStoreLike<A>,
+  atoms: Record<string, Deferred<A>>,
+): StoreLike {
   return {
     getState: (): Record<string, unknown> => {
       const out: Record<string, unknown> = {};
-      for (const [name, atom] of Object.entries(atoms)) out[name] = store.get(atom);
+      for (const [name, atom] of Object.entries(atoms)) {
+        out[name] = store.get(atom);
+      }
       return out;
     },
     subscribe: (listener: () => void): (() => void) => {
       const unsubs = Object.values(atoms).map((atom) => store.sub(atom, listener));
       return () => {
-        for (const unsub of unsubs) unsub();
+        for (const unsub of unsubs) {
+          unsub();
+        }
       };
     },
   };
@@ -321,7 +374,7 @@ function projectLoadable(loadable: RecoilLoadableLike): RecoilAtomSnapshot {
  * ```
  */
 export function recoilStore<A>(
-  atoms: Record<string, A>,
+  atoms: Record<string, Deferred<A>>,
   snapshot: () => RecoilSnapshotLike<A>,
   subscribe: StoreSubscribe,
 ): StoreLike {
@@ -424,7 +477,9 @@ export function svelteStore(
       // green this project exists to prevent, so the rule is positional, not ordinal.
       let inSubscribeCall = true;
       const handle = readable.subscribe(() => {
-        if (!inSubscribeCall) listener();
+        if (!inSubscribeCall) {
+          listener();
+        }
       });
       inSubscribeCall = false;
       return () => stopSubscription(handle);
@@ -512,7 +567,9 @@ export function pushStore(initial: unknown): { store: StoreLike; push: (value: u
     store: { getState: () => current, subscribe },
     push: (value: unknown): void => {
       current = value;
-      for (const listener of listeners) listener();
+      for (const listener of listeners) {
+        listener();
+      }
     },
   };
 }

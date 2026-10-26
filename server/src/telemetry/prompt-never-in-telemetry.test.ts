@@ -79,6 +79,8 @@ describe('a captured prompt and telemetry', () => {
     expect(out.written).toHaveLength(1);
     expect(readFileSync(join(dir, '.reticle', 'request.json'), 'utf8')).toContain(MARKER);
     expect(emitted).toEqual([]);
+    // The CLI-run report is the other route: nothing on the capture path may call it.
+    expect(reported).toEqual([]);
   });
 
   it('no event field can carry a prompt', () => {

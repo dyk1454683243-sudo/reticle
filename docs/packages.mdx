@@ -33,7 +33,7 @@ It was versioned independently until 2.12.0, and that turned out to mean _stuck_
   </Card>
 </CardGroup>
 
-You never install `@reticlehq/server`. Your agent runs it with `npx`.
+You never add `@reticlehq/server` to your project. The one-line installer puts it on your machine, or your agent runs it with `npx`.
 
 ## The architecture in one rule
 
@@ -79,7 +79,20 @@ Those rules are why the browser SDK cannot accidentally pull in a filesystem cal
 
 ```ts
 import { reticle } from '@reticlehq/browser';
-if (import.meta.env.DEV) reticle.connect();
+
+if (import.meta.env.DEV) {
+  // reticle.local.js holds this machine's pairing token. Do not commit it.
+  import('./reticle.local.js')
+    .catch(() => ({}))
+    .then((local) => reticle.connect({ token: local.token }));
+}
+```
+
+The bridge refuses a connect without the pairing token, also on localhost. `reticle init` writes `reticle.local.js` at the project root and adds it to `.gitignore`. Change the import path so that it points to that file. If you did not run `reticle init`, make the file yourself from the token that the daemon keeps in `~/.reticle/pairing-token`:
+
+```bash
+printf "export const token = '%s';\n" "$(cat ~/.reticle/pairing-token)" > reticle.local.js
+echo reticle.local.js >> .gitignore
 ```
 
 ---
@@ -178,7 +191,7 @@ module.exports = withReticle({/* your config */});
 
 ## open-verification
 
-**The specification, as a package.** The vocabulary a verification is described in (subject, channel, intent, claim, window, observation, evidence, coverage, verdict), plus `Realm`, the interface an implementation answers, and `adjudicate()`, the function that turns evidence into a verdict. It ships `SPEC.md`, a JSON Schema for every noun, and a conformance suite that scores an implementation against the rules.
+**The specification, as a package.** The vocabulary a verification is described in (subject, channel, intent, claim, window, observation, evidence, coverage, verdict), plus `Realm`, the interface an implementation answers, and `adjudicate()`, the function that turns evidence into a verdict. It ships `SPEC.md`, a JSON Schema for every noun, and test vectors that a second implementation can check itself against.
 
 **Why it exists:** Reticle's rules about what may buy a green were real and were scattered. The independence rule lived in a channel table, the four verdict values in an enum, the blind-spot idea in a coverage type, and nothing said they were one contract that something other than Reticle could implement. You do not need this package to use Reticle. You need it to write something else that can be checked the same way, or to check what Reticle's verdicts actually mean.
 
@@ -200,7 +213,7 @@ module.exports = withReticle({/* your config */});
 
 **The spec runner for CI.** `reticleTest` registers declarative specs and runs them against Reticle's tools directly, with no MCP or stdio in the loop.
 
-**Why it exists:** driving interactively is reconnaissance. At some point you want the same checks to run on every pull request without an agent. And without paying model tokens to re-derive them.
+**Why it exists:** driving interactively is reconnaissance. At some point you want the same checks to run on every pull request, without an agent and without paying model tokens to derive them again.
 
 **Depends on:** `@reticlehq/core`, `@reticlehq/server`. **Peer:** `vitest`.
 
@@ -234,13 +247,13 @@ A lint rule makes the signal layer self-enforcing, which is the only way a conve
 
 ## reticle-tauri
 
-**The Rust crate**, on crates.io. Versioned in lockstep with the npm packages, so `3.7` here and `3.7` there mean the same release.
+**The Rust crate**, on crates.io. Versioned in lockstep with the npm packages, so `3.8` here and `3.8` there mean the same release.
 
 **Why it exists:** Tauri IPC observation needs nothing on the Rust side; an `invoke('load_todos')` already reaches Reticle as `ipc://load_todos`. You only need this crate for screenshots and headless mode.
 
 ```toml
 [dependencies]
-reticle-tauri = "3.7"
+reticle-tauri = "3.8"
 ```
 
 <Card title="Desktop setup in full" icon="display" href="/desktop">

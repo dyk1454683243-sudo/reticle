@@ -6,6 +6,8 @@
  * needs no clock.
  */
 
+import { callingAttachId } from '@/hooks/coding-agents.js';
+import { episodeStampFor } from '@/hooks/episode-stamp.js';
 import {
   asRunId,
   checkoutOf,
@@ -95,11 +97,17 @@ export class RunStore {
    */
   #branch(): string | undefined {
     const project = dirname(this.#root);
-    if (project.split(/[\\/]/).includes(ReticleDir.ROOT)) return undefined;
+    if (project.split(/[\\/]/).includes(ReticleDir.ROOT)) {
+      return undefined;
+    }
     return checkoutOf(project, readTextOrUndefined)?.branch;
   }
 
-  async write(given: ReticleVerificationRun): Promise<void> {
+  async write(
+    given: ReticleVerificationRun,
+    /** The tab the run came from, so a run written outside any call still finds its episode. */
+    hint: { sessionId?: string } = {},
+  ): Promise<void> {
     let run = given;
     if (!isValidRunId(run.runId)) {
       throw new Error(`refusing to write run with unsafe runId: ${JSON.stringify(run.runId)}`);
@@ -109,14 +117,30 @@ export class RunStore {
       run.context ??
       (await this.#recentRequest(run.createdAt, run.runId)) ??
       (await this.#heldContext(run.runId));
-    if (context !== undefined) run = { ...run, context };
+    if (context !== undefined) {
+      run = { ...run, context };
+    }
+    // The episode this run came from, the agent session behind it, and the commit it ran against,
+    // so it joins exactly.
+    const episode = episodeStampFor(this.#root, callingAttachId(), hint.sessionId);
+    if (episode !== undefined) {
+      const commit = run.project.commit ?? episode.head;
+      run = {
+        ...run,
+        episodeId: episode.episodeId,
+        ...(episode.agentSession === undefined ? {} : { agentSession: episode.agentSession }),
+        project: { ...run.project, ...(commit === undefined ? {} : { commit }) },
+      };
+    }
     // The step screenshots taken for this run, the last of which may still be landing.
     await shotsLanded(this.#root, run.runId);
     run = withScreenshots(run, await readStepShots(this.#fs, this.#root, run.runId));
     // Several agents drive one project at once, each in its own git worktree. Every run kind is
     // written here, so here the run learns which branch it belongs to.
     const branch = run.project.branch ?? this.#branch();
-    if (branch !== undefined) run = { ...run, project: { ...run.project, branch } };
+    if (branch !== undefined) {
+      run = { ...run, project: { ...run.project, branch } };
+    }
     // Atomic publish: write a temp file then rename, so a crash mid-write never leaves a half-written
     // artifact (a partial.json would otherwise read back as MALFORMED).
     const path = runPath(this.#root, run.runId);
@@ -142,14 +166,19 @@ export class RunStore {
       const path = reticleDirPaths(this.#root).request;
       const raw = JSON.parse(await this.#fs.readFile(path)) as Record<string, unknown>;
       const parsed = PromptContextSchema.safeParse(raw);
-      if (!parsed.success) return undefined;
-      const given = parsed.data.at;
-      if (given === undefined || at - given < 0 || REQUEST_RELEVANT_MS < at - given)
+      if (!parsed.success) {
         return undefined;
+      }
+      const given = parsed.data.at;
+      if (given === undefined || at - given < 0 || REQUEST_RELEVANT_MS < at - given) {
+        return undefined;
+      }
       // The first run written for a request answers it; a later run (the next agent session in the
       // same tab) inherited it and showed a goal it never had. Its own rewrite keeps it.
       const answeredBy = raw[REQUEST_RUN_KEY];
-      if ('string' === typeof answeredBy) return answeredBy === runId ? parsed.data : undefined;
+      if ('string' === typeof answeredBy) {
+        return answeredBy === runId ? parsed.data : undefined;
+      }
       await this.#fs.writeFile(
         path,
         `${JSON.stringify({ ...raw, [REQUEST_RUN_KEY]: runId }, null, JSON_INDENT)}\n`,
@@ -183,7 +212,9 @@ export class RunStore {
    */
   async #pruneOld(): Promise<void> {
     const ids = await this.list();
-    if (ids.length <= this.#retention + this.#slack) return;
+    if (ids.length <= this.#retention + this.#slack) {
+      return;
+    }
     // `id: RunId`, not `string`. `list()` already returns RunId[]; annotating the local as string
     // silently discarded the brand and handed a bare string to runPath — which is the transposition
     // the brand exists to prevent, reintroduced by a type annotation rather than by a bad call.
@@ -200,9 +231,13 @@ export class RunStore {
 
   /** Never throws. Invalid id / missing → MISSING; bad JSON or failed schema → MALFORMED. */
   async read(runId: RunId): Promise<ReadRunResult> {
-    if (!isValidRunId(runId)) return { ok: false, reason: RunReadError.MISSING };
+    if (!isValidRunId(runId)) {
+      return { ok: false, reason: RunReadError.MISSING };
+    }
     const path = runPath(this.#root, runId);
-    if (!(await this.#fs.exists(path))) return { ok: false, reason: RunReadError.MISSING };
+    if (!(await this.#fs.exists(path))) {
+      return { ok: false, reason: RunReadError.MISSING };
+    }
 
     let text: string;
     try {
@@ -222,14 +257,18 @@ export class RunStore {
     }
 
     const result = ReticleVerificationRunSchema.safeParse(parsed);
-    if (!result.success) return { ok: false, reason: RunReadError.MALFORMED };
+    if (!result.success) {
+      return { ok: false, reason: RunReadError.MALFORMED };
+    }
     return { ok: true, run: result.data };
   }
 
   /** List run ids on disk (filenames minus.json). Empty when the runs dir is absent. */
   async list(): Promise<RunId[]> {
     const dir = reticleDirPaths(this.#root).runs;
-    if (!(await this.#fs.exists(dir))) return [];
+    if (!(await this.#fs.exists(dir))) {
+      return [];
+    }
     let entries: string[];
     try {
       entries = await this.#fs.readdir(dir);
@@ -246,7 +285,9 @@ export class RunStore {
     const runs: ReticleVerificationRun[] = [];
     for (const id of await this.list()) {
       const result = await this.read(id);
-      if (result.ok) runs.push(result.run);
+      if (result.ok) {
+        runs.push(result.run);
+      }
     }
     return runs;
   }
@@ -275,7 +316,9 @@ export class RunStore {
     const newest = new Map<string, FlowAt>();
     for (const id of await this.list()) {
       const read = await this.read(id);
-      if (!read.ok) continue;
+      if (!read.ok) {
+        continue;
+      }
       const createdAt = read.run.createdAt;
       for (const result of read.run.flows) {
         const s = newest.get(result.name);
@@ -297,8 +340,9 @@ export class RunStore {
   ): Promise<Map<string, number>> {
     const passing = new Map<string, number>();
     for (const { result, createdAt } of (await this.latestPerFlow()).values()) {
-      for (const name of credit([result]))
+      for (const name of credit([result])) {
         passing.set(name, Math.max(passing.get(name) ?? createdAt, createdAt));
+      }
     }
     return passing;
   }
@@ -311,13 +355,19 @@ export class RunStore {
     const runs: ReticleVerificationRun[] = [];
     for (const id of await this.list()) {
       const result = await this.read(id);
-      if (result.ok) runs.push(result.run);
+      if (result.ok) {
+        runs.push(result.run);
+      }
     }
-    if (runs.length < 2) return undefined;
+    if (runs.length < 2) {
+      return undefined;
+    }
     runs.sort((a, b) => a.createdAt - b.createdAt);
     const previous = runs[runs.length - 2];
     const current = runs[runs.length - 1];
-    if (previous === undefined || current === undefined) return undefined;
+    if (previous === undefined || current === undefined) {
+      return undefined;
+    }
     return [previous, current];
   }
 }
@@ -344,9 +394,13 @@ export function noteLanding(dir: string, land: Promise<void>): void {
 
 /** Wait for this run's screenshots still landing, so a run written now can list them. Bounded. */
 export async function shotsLanded(root: string, runId: string): Promise<void> {
-  if (!isValidRunId(runId)) return;
+  if (!isValidRunId(runId)) {
+    return;
+  }
   const pending = landing.get(stepShotDir(root, runId));
-  if (pending === undefined || 0 === pending.size) return;
+  if (pending === undefined || 0 === pending.size) {
+    return;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     Promise.allSettled([...pending]),
@@ -354,7 +408,9 @@ export async function shotsLanded(root: string, runId: string): Promise<void> {
       timer = setTimeout(resolve, LANDING_WAIT_MS);
     }),
   ]);
-  if (timer !== undefined) clearTimeout(timer);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+  }
 }
 
 /** One line of a run's record, read back; anything malformed is skipped. */
@@ -373,7 +429,9 @@ export async function readStepShots(
   root: string,
   runId: string,
 ): Promise<RunScreenshot[]> {
-  if (!isValidRunId(runId)) return [];
+  if (!isValidRunId(runId)) {
+    return [];
+  }
   try {
     const text = await fs.readFile(join(stepShotDir(root, runId), STEP_SCREENSHOT.MANIFEST_FILE));
     return (
@@ -399,7 +457,11 @@ function stepShotOf(shot: RunScreenshot): StepScreenshot {
 /** An id that occurs once in the list; a repeated one (a reload restarts the count) pairs nothing. */
 function uniqueIds(ids: readonly (string | undefined)[]): Set<string> {
   const seen = new Map<string, number>();
-  for (const id of ids) if (id !== undefined) seen.set(id, (seen.get(id) ?? 0) + 1);
+  for (const id of ids) {
+    if (id !== undefined) {
+      seen.set(id, (seen.get(id) ?? 0) + 1);
+    }
+  }
   return new Set([...seen].filter(([, n]) => 1 === n).map(([id]) => id));
 }
 
@@ -413,8 +475,9 @@ function pairByAction(
   shots: readonly RunScreenshot[],
 ): { checks: ReticleVerificationRun['checks']; shots: RunScreenshot[] } | undefined {
   const verdictShots = shots.filter((shot) => true === shot.verdict && shot.actionId !== undefined);
-  if (0 === verdictShots.length || run.checks.every((check) => check.actionId === undefined))
+  if (0 === verdictShots.length || run.checks.every((check) => check.actionId === undefined)) {
     return undefined;
+  }
   const okChecks = uniqueIds(run.checks.map((check) => check.actionId));
   const okShots = uniqueIds(verdictShots.map((shot) => shot.actionId));
   const shotOf = new Map(
@@ -427,8 +490,12 @@ function pairByAction(
   const checkIdOf = new Map<RunScreenshot, string>();
   const checks = run.checks.map((check) => {
     const shot = check.actionId === undefined ? undefined : shotOf.get(check.actionId);
-    if (shot === undefined) return check;
-    if (check.checkId !== undefined) checkIdOf.set(shot, check.checkId);
+    if (shot === undefined) {
+      return check;
+    }
+    if (check.checkId !== undefined) {
+      checkIdOf.set(shot, check.checkId);
+    }
     return { ...check, screenshot: stepShotOf(shot) };
   });
   return {
@@ -451,14 +518,17 @@ function pairWithChecks(
   shots: readonly RunScreenshot[],
 ): { checks: ReticleVerificationRun['checks']; shots: RunScreenshot[] } {
   const byAction = pairByAction(run, shots);
-  if (byAction !== undefined) return byAction;
+  if (byAction !== undefined) {
+    return byAction;
+  }
   const verdictShots = shots.filter((shot) => true === shot.verdict);
   if (
     0 === verdictShots.length ||
     verdictShots.length !== run.checks.length ||
     run.checks.some((check) => check.checkId === undefined)
-  )
+  ) {
     return { checks: run.checks, shots: [...shots] };
+  }
   const checkIdOf = new Map(verdictShots.map((shot, i) => [shot, run.checks[i]?.checkId]));
   return {
     checks: run.checks.map((check, i) => {
@@ -481,7 +551,9 @@ export function withScreenshots(
   run: ReticleVerificationRun,
   taken: readonly RunScreenshot[],
 ): ReticleVerificationRun {
-  if (0 === taken.length) return run;
+  if (0 === taken.length) {
+    return run;
+  }
   const { checks, shots } = pairWithChecks(run, taken);
   const byStep = new Map(
     shots.flatMap((shot) => (shot.step === undefined ? [] : [[shot.step, shot] as const])),

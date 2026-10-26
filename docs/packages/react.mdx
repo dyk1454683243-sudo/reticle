@@ -22,9 +22,15 @@ npm i -D @reticlehq/react
 
 ```ts
 import { reticle, install } from '@reticlehq/react';
+
 install();
-reticle.connect();
+// reticle.local.js holds this machine's pairing token. Do not commit it.
+import('./reticle.local.js')
+  .catch(() => ({}))
+  .then((local) => reticle.connect({ token: local.token }));
 ```
+
+The bridge refuses a connect without the pairing token, also on localhost. `reticle init` writes `reticle.local.js` and adds it to `.gitignore`. Without init, make it from `~/.reticle/pairing-token` as the [browser page](/packages/browser) shows.
 
 ## Exports
 
@@ -72,6 +78,7 @@ The [Vite plugin](/packages/vite-plugin) injects `install()` and `reticle.connec
 One export, and the only module in the package that imports React:
 
 ```ts
+import { useState } from 'react';
 import { useReticleStore } from '@reticlehq/react/store';
 
 function Cart() {

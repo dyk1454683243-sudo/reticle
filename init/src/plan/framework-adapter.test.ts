@@ -13,7 +13,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { detect, Framework, FRAMEWORK_SIGNALS, DETECTION_ORDER, UiLibrary } from '@/detect/detect.js';
+import {
+  detect,
+  Framework,
+  FRAMEWORK_SIGNALS,
+  DETECTION_ORDER,
+  UiLibrary,
+} from '@/detect/detect.js';
 import { FRAMEWORK_ADAPTERS } from './framework-adapter.js';
 import { CONNECT_STEP_TITLES, StepTitle } from './connect-steps.js';
 import { frameworkPackages, type PlanInput } from './plan.js';

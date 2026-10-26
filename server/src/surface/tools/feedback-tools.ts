@@ -15,8 +15,10 @@ import { z } from 'zod';
 import {
   FeedbackKind,
   FeedbackSource,
+  FEEDBACK_CONTACT_MAX,
   FEEDBACK_RATING_MAX,
   FEEDBACK_RATING_MIN,
+  isFeedbackContact,
 } from '@reticlehq/core/telemetry';
 import { ReticleTool } from '@reticlehq/core';
 import { asNumber, asString } from '@reticlehq/core';
@@ -84,6 +86,9 @@ function sessionFacts(
 /** Said when a report arrives with no body at all. Names both accepted fields so the retry can work. */
 const NO_BODY_REASON =
   'the report has no body — send it as `text` (or `summary`, which is the same field). Nothing was filed.';
+
+/** Said when `contact` is not one plain address. Nothing is filed, so the agent can fix it and retry. */
+const BAD_CONTACT_REASON = `\`contact\` must be one email address of at most ${String(FEEDBACK_CONTACT_MAX)} characters, such as you@example.com. Send only an address the user typed for a reply, or leave \`contact\` out. Nothing was filed.`;
 
 /** `text`, or the `summary` alias, whichever arrived. Empty when neither did — the handler refuses. */
 function feedbackBody(args: Record<string, unknown>): string {
@@ -169,6 +174,12 @@ export const FEEDBACK_TOOLS: ToolDef[] = [
         .describe(
           'The literal tool calls and responses that led here, so the failure can be reproduced without guessing.',
         ),
+      contact: z
+        .string()
+        .optional()
+        .describe(
+          'An email address for a reply from the maintainers. Only an address the user typed for this purpose. Never guess or reuse one.',
+        ),
       sessionId: z
         .string()
         .optional()
@@ -183,7 +194,7 @@ export const FEEDBACK_TOOLS: ToolDef[] = [
       accepted: z.boolean(),
       reason: z.string().optional(),
       redacted: z.array(z.string()),
-      context: z.unknown(),
+      context: z.unknown().optional(),
       note: z.string(),
     },
     example: {
@@ -210,6 +221,17 @@ export const FEEDBACK_TOOLS: ToolDef[] = [
           note: 'NOT accepted (see reason). Tell the human what you found so it is not lost.',
         };
       }
+      const contact = asString(args['contact'])?.trim();
+      if (contact !== undefined && '' !== contact && !isFeedbackContact(contact)) {
+        return {
+          sent: false,
+          accepted: false,
+          reason: BAD_CONTACT_REASON,
+          redacted: [],
+          context: undefined,
+          note: 'NOT accepted (see reason). Tell the human what you found so it is not lost.',
+        };
+      }
       const receipt = await submitFeedback(
         {
           source: FeedbackSource.AGENT,
@@ -221,6 +243,7 @@ export const FEEDBACK_TOOLS: ToolDef[] = [
           ...optionalText(args, 'currentApproach'),
           ...optionalText(args, 'model'),
           ...optionalRating(args),
+          ...(contact !== undefined && '' !== contact ? { contact } : {}),
         },
         {
           session: sessionFacts(deps, asString(args['sessionId'])),
@@ -273,6 +296,9 @@ export const VERDICT_TOOLS: ReadonlySet<string> = new Set([
   // ACT_AND_WAIT has -- and the guard that checks SHAPE rather than tool NAME is what caught it
   // here rather than six months from now in a metric that had quietly read low the whole time.
   ReticleTool.ACT_SEQUENCE,
+  // `reticle_act { steps }` runs the sequence under ACT's name on the default surface (#1770).
+  // A single act carries no `verified`, so `verificationOf` counts only the sequence verdict.
+  ReticleTool.ACT,
   ReticleTool.ASSERT,
   // `reticle_assert { action: "wait" }` lands here, and grades its answer as `assert` does.
   ReticleTool.WAIT_FOR,

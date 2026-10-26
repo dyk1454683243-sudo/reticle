@@ -6,7 +6,7 @@ pnpm-lock.yaml
 **/out/**
 **/node_modules/**
 **/.turbo/**
-plan/
+/plan/
 coverage/
 # Reticle's OWN workspace. These files are written by the daemon, not by a person: the contract, the
 # flows, the capsules. They became visible to prettier the moment the blanket `.reticle/` ignore was

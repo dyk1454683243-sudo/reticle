@@ -55,7 +55,11 @@ const sharedFile = { durability: Durability.MEMORY, sharing: Sharing.COMMIT, isD
  */
 export const WORKSPACE_TIERS: Readonly<Record<string, WorkspaceTier>> = {
   [ReticleDir.SESSIONS_SUBDIR]: localDir,
+  // Every tool call and its whole result: app data, so local, and evidence, so swept by age.
+  [ReticleDir.EPISODES_SUBDIR]: localDir,
   [ReticleDir.RUNS_SUBDIR]: localDir,
+  // A dev server's output, written here only when the state home cannot be written.
+  [ReticleDir.LOGS_SUBDIR]: localDir,
   [ReticleDir.VISUAL_SUBDIR]: localDir,
   // Write-only: a local copy of what was already sent. The outbox is the record.
   [ReticleDir.FEEDBACK_SUBDIR]: localDir,
@@ -72,6 +76,7 @@ export const WORKSPACE_TIERS: Readonly<Record<string, WorkspaceTier>> = {
   [ReticleDir.REQUEST_FILE]: localFile,
   // Every prompt the agent hook captured: the same words, so the same rule.
   [ReticleDir.REQUESTS_LOG_FILE]: localFile,
+  [ReticleDir.REQUESTS_LOG_ROTATED_FILE]: localFile,
   // How to target this app, learned from corrected failures: a teammate's agent needs it too.
   [ReticleDir.APP_NOTES_FILE]: sharedFile,
   [ReticleDir.PLATFORM_MOMENTS_FILE]: localFile,

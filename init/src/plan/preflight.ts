@@ -47,7 +47,8 @@ function resolvedPmCommand(io: PreflightIo, packageManager: string): string | un
 }
 
 /** What `preflight` decided: run through `command`, or refuse with this message. */
-export type PreflightResult = { refusal: string; command?: undefined } | { refusal?: undefined; command: string };
+export type PreflightResult =
+  { refusal: string; command?: undefined } | { refusal?: undefined; command: string };
 
 /**
  * The one place this run decides whether — and how — it can invoke the package manager.

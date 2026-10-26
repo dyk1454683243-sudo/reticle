@@ -122,7 +122,7 @@ The rows in **bold** are re-proven by a committed battery on every change, `pnpm
 
 Two steps. The first is the ordinary web setup; the second is the only desktop-specific part.
 
-**1. The renderer.** One line in `vite.config.ts`, exactly like a web app:
+**1. The renderer.** One line in `vite.config.ts`, exactly like a web app. With electron-vite, put it in the `renderer` block of `electron.vite.config`, not in `main` or `preload`:
 
 ```ts
 import { reticle } from '@reticlehq/vite-plugin';
@@ -135,7 +135,7 @@ export default defineConfig({
 
 `desktop: true` does two things a desktop shell needs: `connect()` is injected into the renderer's entry module, so a renderer loaded with no dev server still resolves it, and it is called with `allowInProduction`, because a packaged renderer reports `NODE_ENV=production` and the SDK's production backstop would otherwise refuse to start. It instruments the dev server, and a `vite build` **only when that build runs in a non-production mode**: `vite build --mode development`, for a packaged renderer you want to drive with no dev server. A production-mode build, which is what `vite build` and `electron-vite build` do by default, is stubbed exactly like a web bundle: it carries no SDK and never dials `ws://localhost`, so a release binary built the normal way is clean.
 
-Nothing to add in your app code. You can still call `reticle.connect()` by hand and pass `inject: false` if you want control.
+Nothing to add in your app code. You can still call `reticle.connect()` by hand and pass `inject: false` if you want control. Then pass the pairing token yourself: `reticle.connect({ token: __RETICLE_TOKEN__ })`. The plugin defines `__RETICLE_TOKEN__`, and the bridge refuses a connect without the token, also on localhost.
 
 **2. The preload.** One line, before you expose anything:
 
@@ -163,15 +163,21 @@ Working example: [`apps/electron-smoke`](https://github.com/reticlehq/reticle/tr
 
 **Electron Forge.** `reticle init` recognises Forge's Vite template (`vite.renderer.config.*` and no `vite.config.*`) and wires it the same three ways: `reticle()` in the renderer config, the preload shim, and `installReticleCapture` in main. The plugin goes in **without** `desktop: true`, because `electron-forge start` serves the renderer through a real Vite dev server, so the ordinary serve-time injection reaches the window and `electron-forge package` ships a renderer with no Reticle code. `init` starts the app with the script that runs `electron-forge start`, not the renderer's dev script. A vanilla renderer gets `@reticlehq/browser` rather than the React kit.
 
+**A static renderer (no Vite).** When the renderer is a plain `index.html`, `reticle init` does not write the connect snippet into it. A packaged Electron app can serve its renderer on `localhost`, so a localhost-only guard does not keep the SDK out of a release. Init prints a manual step instead. Connect only in development: for example, send `!app.isPackaged` from the main process to the renderer, and call `reticle.connect()` only when it is true. Pass the pairing token as `token`: the bridge refuses a connect without it. Use `@reticlehq/electron` for IPC and capture. If `reticle.local.js` is in the project, keep it out of the package: electron-builder `files: ["!reticle.local.js"]`, or Electron Forge `packagerConfig.ignore: [/reticle\.local\.js$/]`.
+
 ## Tauri setup
 
-Frontend side, nothing desktop-specific:
+Frontend side: add the Vite plugin with `desktop: true`, as for Electron. The plugin injects `connect()` with this machine's pairing token. Do not call `reticle.connect()` yourself.
 
 ```ts
-// src/main.tsx
-import { reticle } from '@reticlehq/browser';
+// vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { reticle } from '@reticlehq/vite-plugin';
 
-if (import.meta.env.DEV) reticle.connect();
+export default defineConfig({
+  plugins: [react(), reticle({ desktop: true })],
+});
 ```
 
 Nothing else is needed for IPC. A Tauri `invoke` travels as a real `fetch` to Tauri's `ipc://` custom protocol, so Reticle already sees it; every `invoke('load_todos')` shows up as `ipc://load_todos`. Reticle also reads Tauri's `Tauri-Response` header, because the transport answers **HTTP 200 whether the Rust command returned `Ok` or `Err`**. Without that translation a failed command would be recorded as a successful request.
@@ -218,7 +224,7 @@ Alternatively, since an Electron renderer _is_ Chromium, `--remote-debugging-por
 
 ```toml
 [dependencies]
-reticle-tauri = "3.7"
+reticle-tauri = "3.8"
 ```
 
 ```rust
@@ -227,7 +233,7 @@ tauri::Builder::default()
     .on_page_load(reticle_tauri::on_page_load)
 ```
 
-**Dev builds only.** In a release build the crate is inert: `reticle_capture` refuses and `on_page_load` does nothing, so the binary you sign and ship carries no Reticle capability. A release build you test with Reticle (a CI fixture) turns it on with `reticle-tauri = { version = "3.7", features = ["in-release"] }`.
+**Dev builds only.** In a release build the crate is inert: `reticle_capture` refuses and `on_page_load` does nothing, so the binary you sign and ship carries no Reticle capability. A release build you test with Reticle (a CI fixture) turns it on with `reticle-tauri = { version = "3.8", features = ["in-release"] }`.
 
 Nothing on the JavaScript side: the SDK invokes the command through Tauri's own internals, because Tauri has no preload stage where a shim could be installed.
 
@@ -272,16 +278,6 @@ Run with `RETICLE_HEADLESS=1 pnpm tauri dev`. Nothing ends up on screen, and scr
 The ordering is the whole trick. Hiding the window during `setup` hides it before the webview has ever been presented, and a webview that has never been presented never loads its page, which is what made headless Tauri look impossible. Hiding it after its first page load leaves everything running. Verified with a full 43-tool drive plus a screenshot and a visual diff against a window that is not on screen.
 
 `xvfb-run -a pnpm tauri dev` also works on Linux and needs no app-side change at all.
-
-### A correction worth recording: the Tauri macOS "liveness constraint" was wrong
-
-Earlier versions of this document said a Tauri app on macOS is only drivable while its window is on the active Space and unoccluded, and that hiding it suspends the webview. **That is not true, and the mistake is worth recording because it cost three features.**
-
-Re-measured against the live app, a loaded Tauri webview answers Reticle commands at full speed while minimized, app-hidden with Cmd-H, fully occluded, on another Space behind a fullscreen app, and with no window on screen at all. A full 43-tool drive passes in every one of those states.
-
-What actually failed was narrower: **a webview that has never been presented never loads its page.** Every "suspension" experiment hid or moved the window from `setup`, meaning before the first present, so the page never ran and every command timed out at 8s. The timeouts were real; the diagnosis was not. The `alwaysOnTop` workaround was then built to fix a problem that did not exist, measured as "still broken" for the same reason, and deleted.
-
-The lesson generalises past this document: four experiments agreeing does not make a conclusion controlled, if all four share the same confound.
 
 ## Routing: use a hash router
 

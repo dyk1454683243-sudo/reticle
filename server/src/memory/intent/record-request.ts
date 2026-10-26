@@ -12,7 +12,7 @@ import {
   splitStatements,
   type PromptContext,
 } from '@reticlehq/core/artifacts';
-import { ReticleDir, apiKeyFrom, mainCheckoutTwin } from '@reticlehq/core';
+import { ReticleDir, ReticleEnv, apiKeyFrom, mainCheckoutTwin } from '@reticlehq/core';
 import { readTextOrUndefined } from '@/memory/project/fs/fs-port.js';
 import { redactFeedbackText } from '@/telemetry/feedback.js';
 
@@ -20,6 +20,7 @@ export const MAX_REQUEST = 20_000;
 const MAX_STATEMENT = 500;
 const MAX_STATEMENTS = 100;
 export const PROJECT_CONFIG = '.reticle.json';
+const OFF_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'off', 'no']);
 
 /** Credentials and personal data out, length capped: the same rules feedback reports follow. */
 export function redactSecrets(text: string, max: number): string {
@@ -36,6 +37,19 @@ export function projectSetting(projectDir: string, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The one switch for everything the agent hooks keep: prompts, tool calls, the model and the
+ * closing message. `RETICLE_PROMPT_CAPTURE=0` stops it on this machine.
+ */
+export function agentCaptureOff(env: NodeJS.ProcessEnv): boolean {
+  return OFF_VALUES.has((env[ReticleEnv.PROMPT_CAPTURE] ?? '').toLowerCase());
+}
+
+/** The same switch for one project: `"promptCapture": false` in its `.reticle.json`. */
+export function agentCaptureOffIn(projectDir: string): boolean {
+  return false === projectSetting(projectDir, 'promptCapture');
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { ReticleTool } from '@reticlehq/core';
 import type { ToolDef } from './tool-kit.js';
 
@@ -446,4 +447,52 @@ export function filterTools(tools: ToolDef[], surface: ToolSurface): ToolDef[] {
   // `all` is the extended surface, not the whole registry — the cap is a hard budget shared with
   // every other MCP server the user has connected. surface-sizes.test.ts enforces it.
   return tools.filter((t) => CORE_TOOL_NAMES.has(t.name) || EXTENDED_TOOL_NAMES.has(t.name));
+}
+
+/**
+ * The MCP annotations of each Reticle tool: whether it changes anything, and whether it reaches
+ * past this machine. A client can decide approval from them: Codex's `writes` mode asks only
+ * for the tools that are not read-only.
+ *
+ * Read-only means that the tool changes neither the app nor the project's files. A tool that is
+ * not in the list is treated as a write, which is the safe side. No Reticle tool deletes data
+ * the user owns, so `destructiveHint` is always false.
+ */
+const READ_ONLY: ReadonlySet<string> = new Set([
+  ReticleTool.SESSIONS,
+  ReticleTool.LOOK,
+  ReticleTool.SNAPSHOT,
+  ReticleTool.QUERY,
+  ReticleTool.INSPECT,
+  ReticleTool.OBSERVE,
+  ReticleTool.LINEAGE,
+  ReticleTool.WAIT_FOR,
+  ReticleTool.NETWORK,
+  ReticleTool.CONSOLE,
+  ReticleTool.ANIMATIONS,
+  ReticleTool.ASSERT,
+  ReticleTool.STATE,
+  ReticleTool.CAPABILITIES,
+  ReticleTool.CONTEXT,
+  ReticleTool.MAP,
+  ReticleTool.MEMORY,
+  ReticleTool.TOOLS,
+]);
+
+/** Tools that can send data off this machine or open any URL. */
+const OPEN_WORLD: ReadonlySet<string> = new Set([
+  ReticleTool.NAVIGATE,
+  ReticleTool.SESSION,
+  ReticleTool.VERIFY,
+  ReticleTool.EXPLORE,
+  ReticleTool.FEEDBACK,
+  ReticleTool.RUN,
+]);
+
+export function toolAnnotations(name: string): ToolAnnotations {
+  return {
+    readOnlyHint: READ_ONLY.has(name),
+    destructiveHint: false,
+    openWorldHint: OPEN_WORLD.has(name),
+  };
 }

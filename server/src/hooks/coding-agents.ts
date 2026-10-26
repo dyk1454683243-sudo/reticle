@@ -45,7 +45,9 @@ export function agentLabel(name: string): string {
 
 /** The closed telemetry value for a client name: never the name itself, which is the client's text. */
 export function agentClientOf(name: string | undefined): AgentClient | undefined {
-  if (name === undefined || 0 === name.trim().length) return undefined;
+  if (name === undefined || 0 === name.trim().length) {
+    return undefined;
+  }
   return knownAgent(name)?.[2] ?? AgentClient.OTHER;
 }
 
@@ -55,9 +57,33 @@ export function noteAgentAttached(attachId: string, name: string): void {
   changed();
 }
 
+/**
+ * The agent's own session id per connection, as its MCP server announced it. Kept after the
+ * connection closes: a run written at a session's end still needs it.
+ * ponytail: never pruned; one short string per MCP connect for the daemon's lifetime.
+ */
+const sessionByAttach = new Map<string, string>();
+
+/** Connection `attachId` announced the agent session `session`. */
+export function noteAgentSession(attachId: string, session: string): void {
+  sessionByAttach.set(attachId, session);
+}
+
+/** The agent session connection `attachId` announced, if any. */
+export function agentSessionOf(attachId: string | undefined): string | undefined {
+  return attachId === undefined ? undefined : sessionByAttach.get(attachId);
+}
+
+/** The name connection `attachId` gave in its handshake, while it is attached. */
+export function agentNameOf(attachId: string | undefined): string | undefined {
+  return attachId === undefined ? undefined : byAttach.get(attachId);
+}
+
 /** That connection closed. */
 export function noteAgentDetached(attachId: string): void {
-  if (byAttach.delete(attachId)) changed();
+  if (byAttach.delete(attachId)) {
+    changed();
+  }
 }
 
 /** The friendly names of the agents attached now, each once. */
@@ -107,7 +133,9 @@ export function callerClientName(): string | undefined {
 export function callingClientName(): string | undefined {
   const own = calling.getStore();
   const name = own === undefined ? undefined : byAttach.get(own);
-  if (name !== undefined) return name;
+  if (name !== undefined) {
+    return name;
+  }
   const all = [...new Set(byAttach.values())];
   return 1 === all.length ? all[0] : undefined;
 }

@@ -31,7 +31,7 @@ If you haven't set up Reticle yet, start with [Getting Started](getting-started.
 1. [How Reticle helps you](#1-how-reticle-helps-you)
 2. [Core concepts](#2-core-concepts)
 3. [The tools: full reference](#3-the-tools-full-reference)
-4. [The predicate DSL: full reference](#4-the-predicate-dsl-full-reference)
+4. [The predicate DSL](#4-the-predicate-dsl)
 5. [Actions: full list](#5-actions-full-list)
 6. [Snapshot modes & scoping](#6-snapshot-modes--scoping)
 7. [Cookbook: real situations](#7-cookbook-real-situations)
@@ -72,11 +72,11 @@ Who benefits most: anyone shipping **dashboards, internal tools, SaaS apps**. Be
 3. **Observe** with `reticle_observe({ since })`: everything the app did _after_ that action.
 4. **Assert** with `reticle_assert({ predicate })`. Verify it, get evidence.
 
-**Refs.** Elements are addressed by stable handles like `e7`. You get them from `reticle_look { action: "page" }` or `reticle_look { action: "find" }`, then pass them to `act`/`inspect`. A ref re-resolves to its element across re-renders; if the element is gone, you get a clear error.
+**Refs.** Elements are addressed by stable handles like `e7`. You get them from `reticle_look { action: "page" }` or `reticle_look { action: "find" }`, then pass them to `reticle_act` or `reticle_look { action: "element" }`. A ref re-resolves to its element across re-renders; if the element is gone, you get a clear error.
 
-**Evidence, not prose.** Every tool returns structured data (counts, the matching network call, the snapshot delta) so the agent reasons over facts, not a vibe.
+**Evidence, not prose.** Every tool returns structured data (counts, the matching network call, the snapshot delta), so the agent reasons over facts.
 
-**Sessions.** Each connected browser tab is a session (named via `reticle.connect({ session })`). With one tab open you never specify it; with several, pass `sessionId`.
+**Sessions.** Each connected browser tab is a session (named via `reticle.connect({ session })`). Omit `sessionId` unless you mean a specific tab. Reticle scopes to your project, prefers the active tab, and refuses when the choice is ambiguous.
 
 ---
 
@@ -84,14 +84,14 @@ Who benefits most: anyone shipping **dashboards, internal tools, SaaS apps**. Be
 
 ### `reticle_session { action: "list" }`
 
-List connected tabs. → `{ sessions: [{ sessionId, url, title, lastSeenMs, hidden, focused, throttled }] }`. `lastSeenMs` is the silence since the tab last reported (not time-since-connect); `throttled` is `true` when the tab is hidden **or** has merely gone quiet, and the two are not the same finding: a hidden tab clamps timers/rAF/pointer so an action can land on a page that never advances, while a quiet-but-visible tab is usually still driveable. The accompanying `recommendation` says which case you are in; treat `throttled` as a reason to read it, not as a reason to lease.
+List connected tabs. → `{ sessions: [{ sessionId, url, title, lastSeenMs, hidden, focused, throttled, sdkVersion?, sdkBehind?, pendingMarks?, … }], next_step? }`. `sdkBehind` is present when the page's SDK is a minor release or more behind the daemon, and it names the update command. On a project that was never wired, this call changes no file: `next_step` names the zero-install lease, and the question to ask the user before you run `init`. `lastSeenMs` is the silence since the tab last reported (not time-since-connect); `throttled` is `true` when the tab is hidden **or** has merely gone quiet, and the two are not the same finding: a hidden tab clamps timers/rAF/pointer so an action can land on a page that never advances, while a quiet-but-visible tab is usually still driveable. The accompanying `recommendation` says which case you are in; treat `throttled` as a reason to read it, not as a reason to lease.
 
 ### `reticle_look { action: "page" }`
 
 A semantic, accessibility-tree view of the page.
 
-- **args:** `mode?: 'full' | 'interactive' | 'status'` (default `full`), `scope?` (CSS selector or ref), `diff?: boolean`, `sessionId?`.
-- **returns:** `{ tree, status: { route, title, visibleDialogs, overlayHidingPage }, nodes, truncated, cost: { bytes, tokens } }`.
+- **args:** `mode?: 'full' | 'interactive' | 'status'` (default `full`), `scope?` (CSS selector or ref), `diff?: boolean`, `ids?: boolean` (add `[testid=…]` to each control that has one), `audit?: boolean` (also report text cut off with no ellipsis, controls drawn over each other, and text under WCAG contrast, as `audit: [{ kind, ref, what, detail }]`), `sessionId?`.
+- **returns:** `{ tree, status: { route, title, visibleDialogs?, overlayHidingPage? }, nodes, truncated, cost: { bytes, tokens } }`.
 - **`diff: true`** returns only what changed since your last snapshot of the same scope/mode: `{ mode: 'delta', delta: { added, removed, addedCount, removedCount } }` or `{ mode: 'unchanged' }` (no full tree). The first call (and any call after a route change) still returns the full tree. ~99% fewer tokens to re-look after an action; see [token-efficiency.md](token-efficiency.md).
 - **`cost`** is an estimated size of the result. Re-scope (`mode`/`scope`) before reading if large.
 
@@ -99,7 +99,7 @@ A semantic, accessibility-tree view of the page.
 reticle_look({ action: "page", mode: "interactive" })
 // - tab "Overview" (ref=e2)
 // - button "Add item" (ref=e5)
-// status: { route: "/dashboard", visibleDialogs: [] }
+// status: { route: "/dashboard", title: "Dashboard" }   // visibleDialogs appears only when a dialog is open
 
 reticle_look({ action: "page", diff: true }) // after an action: only the change set
 // { mode: "delta", delta: { added: ['- alert "Saved!"'], removed: [], addedCount: 1, removedCount: 0 } }
@@ -109,7 +109,7 @@ reticle_look({ action: "page", diff: true }) // after an action: only the change
 
 Find elements (Testing-Library semantics).
 
-- **args:** `by: 'role'|'text'|'label'|'placeholder'|'testid'|'alt'`, `value`, `name?` (for role), `scope?`, `sessionId?`.
+- **args:** `by: 'role'|'text'|'label'|'placeholder'|'testid'|'alt'|'component'`, `value`, `name?` (for role), `scope?`, `limit?`, `sessionId?`.
 - **returns:** `{ elements: [{ ref, role, name, value?, states, visible, text? }] }`.
 
 ```jsonc
@@ -129,7 +129,7 @@ Deep detail on one element, including the signals a snapshot/a11y tree omits, so
 Perform one action / several in order.
 
 - **`reticle_act` args:** `ref`, `action`, `args?`, `refuseWhenThrottled?`, `sessionId?`. → `{ since, dispatched, settled, settleReason, result, session, warning? }` where `result = { ok, ref, action, dispatched, settled, settleReason, effect }`. The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every act; when `throttled` is true a `warning` string is also attached. Pass `refuseWhenThrottled: true` to hard-fail instead of warning (opt-in; default is warn-only so background testing never breaks).
-- **`reticle_act { steps: [...] }` args:** `steps: [{ ref | target, action, args? }]`. Each step takes `ref` (from a snapshot/query) or `target` (`{ testid }` / `{ label }` / `{ role, name }` / `{ text }`). That is the same locator `reticle_act` accepts. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
+- **`reticle_act { steps: [...] }` args:** `steps: [{ ref | target, action, args?, expect? }]`. `expect` takes the same predicate as `reticle_act_and_wait` `until`. A step with `expect` proves its consequence. The call stops at the first `expect` that fails and returns `verified` and `because`. Each step takes `ref` (from a snapshot/query) or `target` (`{ testid }` / `{ label }` / `{ role, name }` / `{ text }`). That is the same locator `reticle_act` accepts. → `{ since, dispatched, result }` where `result = { ok, count, effects: [...], steps: [...] }` (one `effect` per step; each step carries its own `dispatched`/`settled`/`settleReason`).
 - See [§5](#5-actions-full-list) for the action list.
 
 **Dispatch vs settle.** (Settle means the page has stopped changing for now.) The action is two phases: the **dispatch** (the synchronous click/fill, which is what can fail) and the **settle** (waiting one animation frame so React's commit lands before we return). The settle is **bounded** (~200ms): in a throttled/background tab `requestAnimationFrame` never fires, so Reticle falls back to a timer and resolves anyway. A settle timeout is therefore **never an error**: `reticle_act` resolves with `settled:false, settleReason:"timeout"` and the dispatch (the click) has still landed. Only a real dispatch failure (stale ref, wrong element type) throws.
@@ -188,15 +188,15 @@ The timeline + summary of what happened.
 
 Act, then wait for a predicate: the whole act→observe→assert loop in one hop.
 
-- **args:** `ref`, `action`, `args?`, `until: <predicate>`, `timeout_ms?` (default 4000; 0 = evaluate once), `refuseWhenThrottled?`, `intent?`, `durable?` (after a yes, reload and require `until`'s element/text/state parts to hold again), `sessionId?`.
-- **returns:** `{ verified, because, effect, verdict, trace, summary, honesty, since, session, … }`. **Gate on `verified`** (`yes` / `no` / `unknown` / `no-fault`; only `yes` is a pass) and read `because` for the deciding evidence. `effect` is the action result (`{ ok, ref, action }`), `verdict` is `{ pass, evidence?, failureReason? }` plus `verifiedReason`, the clause that decided it, `trace` is the reaction report of everything the app did after the action, and `session` is the tab-health block `{ lastSeenMs, throttled, focused }` (with a `warning` when throttled). A failing `verdict` still returns `effect` + `trace` so you can see what _did_ happen. The predicate is automatically floored at this act's cursor, so it only matches events the action actually caused.
+- **args:** `ref` or `target` (`{ testid }` / `{ label }` / `{ role, name }` / `{ text }`), `action`, `args?`, `until?: <predicate>` (omit it to wait only for the page to settle), `timeout_ms?` (default 4000; 0 = evaluate once), `refuseWhenThrottled?`, `intent?`, `durable?` (after a yes, reload and require `until`'s element/text/state parts to hold again), `sessionId?`.
+- **returns:** `{ verified, because, effect, verdict, trace, summary, honesty, engineBlindSpots?, since, session, … }`. `engineBlindSpots` names what no channel could see in this run: `pixels-unobserved` (a `<canvas>` was on screen) and `claim-arithmetic-unchecked` (the claim states an amount and no verdict ran a `compare`). **Gate on `verified`** (`yes` / `no` / `unknown` / `no-fault`; only `yes` is a pass) and read `because` for the deciding evidence. `effect` is the action result (`{ ok, ref, action }`), `verdict` is `{ pass, evidence?, failureReason? }` plus `verifiedReason`, the clause that decided it, `trace` is the reaction report of everything the app did after the action, and `session` is the tab-health block `{ lastSeenMs, throttled, focused }` (with a `warning` when throttled). A failing `verdict` still returns `effect` + `trace` so you can see what _did_ happen. The predicate is automatically floored at this act's cursor, so it only matches events the action actually caused.
 
 ### `reticle_assert { action: "wait" }`
 
-Block until a predicate holds (or time out). Looks both backward (recent buffer) and forward. It returns `pass` and evidence with no `verified`: a wait is not a verdict. Put the consequence on `reticle_act_and_wait` or `reticle_assert` to get one.
+Block until a predicate holds, or time out. It looks back at the recent buffer and forward. It returns `verified`, `because` and `pass`, graded as `reticle_assert` grades them. Gate on `verified`. One call waits for a limited time. When it stops before the predicate holds, it returns `resume_ms`: call again with `timeout_ms: resume_ms` and the same `since` to keep waiting. A wait is not saved to the journal. Use it to let the page settle, and put the proof on `reticle_act_and_wait` or `reticle_assert`.
 
-- **args:** `predicate`, `timeout_ms?` (default 4000), `since?`, `sessionId?`.
-- **No stale-signal false passes.** By default the evaluation window is floored at your **last act's cursor**, so a signal/network/console/animation event buffered _before_ the action can never satisfy the predicate (the report's "validation 68 == 68 was a lie" footgun). Pass an explicit `since` (an act/observe cursor) to widen or narrow the window deliberately. Element/text predicates query the live DOM and are unaffected by `since`.
+- **args:** `predicate`, `timeout_ms?` (default 4000, up to 600000), `since?`, `sessionId?`.
+- **No stale-signal false passes.** By default the evaluation window is floored at your **last act's cursor**, so a signal, network, console or animation event buffered _before_ the action can never satisfy the predicate. Pass an explicit `since` (an act/observe cursor) to widen or narrow the window deliberately. Element/text predicates query the live DOM and are unaffected by `since`.
 
 ### `reticle_assert`
 
@@ -204,7 +204,7 @@ Verify a predicate; optionally wait for it.
 
 - **args:** `predicate`, `timeout_ms?` (0 = evaluate once), `since?`, `intent?`, `sessionId?`.
 - Same `since` default as `reticle_assert { action: "wait" }`: scoped to your last act so a stale buffered event can't fake a pass; override with an explicit `since`.
-- **returns:** `{ verified, because, pass, evidence, contradictions?, coverage?, failureReason?, session, warning? }`. On failure includes a **near-miss** (e.g. "found the dialog but not visible", or "no button named 'Submit'; saw: Cancel"). The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every assert; when throttled a `warning` is attached so you never assert against a tab that is silently no-oping.
+- **returns:** `{ verified, because, pass, evidence, contradictions?, coverage?, engineBlindSpots?, failureReason?, session, warning? }`. On failure includes a **near-miss** (e.g. "found the dialog but not visible", or "no button named 'Submit'; saw: Cancel"). The `session` block `{ lastSeenMs, throttled, focused }` reports tab health on every assert; when throttled a `warning` is attached so you never assert against a tab that is silently no-oping.
 - **`intent` declares what the change was FOR, inline.** Pass a sentence in your own words and it lands in `.reticle/intent/` (one directory per subject, a flow's name being its subject), the same git-checked ledger `reticle_intent` writes, before the verdict is drawn; a green verdict then marks it proved and names itself as the proof. Pass the **id** of an intent you already declared instead, to point several verdicts at one statement rather than restating it. `reticle_act_and_wait` takes the same argument. Omit it and nothing is written.
 - **Read `verified`, not `pass`.** `pass` says the predicate held; `verified` says whether that means anything. It is `"no"` when a channel contradicts the assertion (a failed write under a green screen, a batch whose body reports per-item failures, a request still in flight), and `"unknown"` when the outcome could not be known yet: a `202 Accepted` that has not reconciled, or a write whose response body was never recorded. `because` names the deciding evidence in one sentence.
 
@@ -310,7 +310,7 @@ The dev clicks **"Flag a bug"** in the running app, points at the element that l
 reticle_session({ action: "review", sessionId })
 → { marks: [{ id: "m1", note: "this button is misaligned", label: "button \"Pay\"",
               source: { file: "src/Checkout.tsx", line: 42 },
-              fix: "Open src/Checkout.tsx:42 and fix: this button is misaligned. Then reticle_session { action: "review" } { resolve: \"m1\" }" }],
+              fix: "Open src/Checkout.tsx:42 and fix: this button is misaligned. Then call reticle_session { action: \"review\", resolve: \"m1\" }." }],
     pendingCount: 1 }
 ```
 
@@ -331,24 +331,24 @@ First matching rule wins (`urlContains` + optional case-insensitive `method`). N
 
 ### `reticle_viewport`: reproducible visual baselines (driven mode)
 
-Pin the driven page to a fixed viewport so a screenshot baseline is reproducible across machines:
+Pin the driven page, or a leased tab named by `sessionId`, to a fixed viewport so a screenshot baseline is the same on every machine:
 
 ```
 reticle_run({ tool: "reticle_viewport", args: { width: 1280, height: 800 } })   // set once, before reticle_screenshot / reticle_visual_diff
-→ { applied: true, width: 1280, height: 800 }
+→ { applied: true, width: 1280, height: 800 }   // on a lease also `observed`, the size the page reports; `applied` is false when it does not match
 ```
 
 This is one of three knobs for **CI-stable visual regression**. Set them together:
 
 1. **`reticle_run({ tool: "reticle_viewport", args: { width, height } })`** gives the same dimensions on every machine.
-2. **`reticle_run({ tool: "reticle_clock", args: { freeze: true } })`** kills animation/time jitter so the pixels are stable.
+2. **`reticle_run({ tool: "reticle_clock", args: { freeze: true } })`** stops timer and date jitter (clocks, countdowns). For animations, also pass `reducedMotion: "reduce"` to `reticle_viewport`.
 3. **`reticle_run({ tool: "reticle_visual_diff", args: { baseline, masks: [{ x, y, width, height }] } })`** neutralizes volatile regions (clocks, avatars, ids) so only real changes fail.
 
 ---
 
-## 4. The predicate DSL: full reference
+## 4. The predicate DSL
 
-A **predicate** declares what should be true. `reticle_assert` / `reticle_assert { action: "wait" }` evaluate it against the live DOM + the event buffer.
+A **predicate** declares what should be true. `reticle_assert` / `reticle_assert { action: "wait" }` evaluate it against the live DOM and the event buffer. This section shows the common kinds. [Predicates](/predicates) is the full reference, including `settled`, `compare`, and `count` on `net` and `signal` (exact; `count: 0` means never).
 
 ### Leaf predicates
 
@@ -387,7 +387,7 @@ A **predicate** declares what should be true. `reticle_assert` / `reticle_assert
 { "kind": "state", "store": "app", "path": "deployments.0.status", "equals": "live" }
 ```
 
-`visible` excludes elements whose boxes are fully clipped by an ancestor's `overflow:hidden` or `overflow:clip`; a partly clipped element stays visible. Expanding a clamped card can therefore prove that its previously hidden paragraph became visible. `overflow:auto` and `overflow:scroll` keep their existing visibility semantics, including content beyond the scrollport. Ordinary document content outside the window remains visible; `inViewport` checks the window intersection after any hidden/clip ancestor clipping, without introducing scrollport clipping.
+`visible` excludes elements whose boxes are fully clipped by an ancestor's `overflow:hidden` or `overflow:clip`; a partly clipped element stays visible. It also excludes screen-reader-only text: a positioned box with a `clip: rect()` of no area, a `clip-path: inset()` whose edges meet, or a 1×1 box that clips its own overflow. That text stays `present` and still names its control. Expanding a clamped card can therefore prove that its previously hidden paragraph became visible. `overflow:auto` and `overflow:scroll` keep their existing visibility semantics, including content beyond the scrollport. Ordinary document content outside the window remains visible; `inViewport` checks the window intersection after any hidden/clip ancestor clipping, without introducing scrollport clipping.
 
 A `state` assertion is graded as a **consequence** (a wrong element or stale render cannot fake it), and is usable the same three ways anywhere predicates flow: ad-hoc (`reticle_assert` / `reticle_act_and_wait` `until`), as a flow step invariant (`reticle_annotate { kind: "assert-state", statePath, store?, equals? }`), and as a flow's golden end-condition (`reticle_annotate { kind: "success-state", statePath, … }`). On a miss it names the real store value and the keys that were available: legible, not a blind fail.
 
@@ -414,7 +414,7 @@ A `state` assertion is graded as a **consequence** (a wrong element or stale ren
 
 | action | args | notes |
 | --- | --- | --- |
-| `click` / `dblclick` | n/a | dispatches a real click |
+| `click` / `dblclick` | `{ native? }` | dispatches the full pointer and mouse sequence on the element; `native: true` forces a trusted click through CDP |
 | `hover` | n/a | `mouseover`+`mouseenter` (triggers JS hover state) |
 | `focus` / `blur` | n/a |  |
 | `fill` | `{ value }` | sets value via React-safe native setter + `input`/`change` |
@@ -437,7 +437,7 @@ A `state` assertion is graded as a **consequence** (a wrong element or stale ren
 
 `reticle_look { action: "page" }` has three modes. Pick the cheapest that answers your question:
 
-- **`status`** (~30 tokens): route, visible dialogs, counters. "Where am I, is a modal open?"
+- **`status`** (~30 tokens): the route, the title, and the open dialogs if there are any. "Where am I, is a modal open?"
 - **`interactive`** (~100 tokens): only actionable elements (buttons, inputs, tabs…). "What can I click?" Non-interactive content (e.g. 1,000 list rows) is skipped.
 - **`full`**: the whole semantic tree. Use only when you truly need everything.
 
@@ -502,7 +502,7 @@ reticle_assert({ timeout_ms: 3000, predicate: { kind: "element",
   query: { text: "Invoice #4821", scope: "[data-testid=item-list]" }, state: "visible" } })
 ```
 
-> Note: if your list is **virtualized** (react-window/virtuoso), an off-screen row is not in the DOM at all, so `reticle_look { action: "find" }` correctly finds nothing. Use **`reticle_scroll_to`** to scroll the windowed container until the row renders, then query it: `reticle_run({ tool: "reticle_scroll_to", args: { by: "text", value: "Invoice #4821", container: "[data-testid=item-list]" } })`. Asserting against the data with `reticle.signal` or `reticle_look { action: "state" }` also works and is cheaper.
+> Note: if your list is **virtualized** (react-window/virtuoso), an off-screen row is not in the DOM at all, so `reticle_look { action: "find" }` correctly finds nothing. Use **`reticle_scroll_to`** to scroll the windowed container until the row renders. First get the container's ref, for example with `reticle_look({ action: "find", by: "testid", value: "item-list" })`, then pass that ref: `reticle_run({ tool: "reticle_scroll_to", args: { by: "text", value: "Invoice #4821", container: "e12" } })`. `container` takes a ref, not a CSS selector. Asserting against the data with `reticle.signal` or `reticle_look { action: "state" }` also works and is cheaper.
 
 ### "Login form: does it actually authorize?"
 
@@ -558,7 +558,7 @@ const after  = reticle_look({ action: "element", ref }).styles.backgroundColor
 // assert before !== after
 ```
 
-> Pure CSS `:hover` styling needs a real pointer; drive hover effects from JS state (or use a Playwright real-hover) if you need pixel-exact `:hover`. Reticle reads computed style after the JS state change.
+> Pure CSS `:hover` styling needs a real pointer. Enable real input ([§18](#18-real-input-mode-native-hover--drag)) or use a page from `reticle drive`, and `hover` then moves the real pointer. Without it, `hover` fires the JS events only, and Reticle reads the computed style after the JS state change.
 
 ### "Something off-DOM happened: a webhook arrived, a store changed"
 
@@ -633,7 +633,7 @@ The semantic `reticle_run { tool: "reticle_baseline", args: { action: "diff" } }
 
 ```jsonc
 reticle_run({ tool: "reticle_viewport", args: { width: 1280, height: 800 } }) // 1. same size on every machine
-reticle_run({ tool: "reticle_clock", args: { freeze: true } })                // 2. no animation/time jitter
+reticle_run({ tool: "reticle_clock", args: { freeze: true } })                // 2. no timer or date jitter (pass reducedMotion: "reduce" to reticle_viewport for animations)
 reticle_run({ tool: "reticle_screenshot", args: { name: "checkout-ok" } })    //    capture the baseline
 // …later, after a change, at the same viewport + frozen clock:
 reticle_run({ tool: "reticle_visual_diff", args: { baseline: "checkout-ok", masks: [{ x: 0, y: 0, width: 200, height: 24 }] } })
@@ -655,9 +655,11 @@ reticle_run({ tool: "reticle_record", args: { action: "stop", recordingName: "ch
 // → {
 //     recordingName,
 //     program: { version, steps: [{ tool, args: { by:"testid", value, action, args }, stable }] },
-//     events: [...ordered timeline...],
-//     summary: { network, domAdded, … },
-//     warning?  // present when some steps could not be bound to a testid
+//     window_ms, summary: { total, network?, domAdded?, … },   // zero counters are left out
+//     timeline_omitted?,        // the raw events are not included; it names the reticle_observe { since } call that reads them
+//     proposedConsequences?,    // ranked checks you can keep as the flow's success condition
+//     warning?,                 // a step has no testid, or the recording crossed a reload or left the page
+//     cost
 //   }
 ```
 
@@ -703,7 +705,7 @@ A practical workflow:
 
 > "Here are our 12 dashboard test cases. For each, drive the app with Reticle and tell me pass/fail with evidence. For any failure, show the source file to fix."
 
-This is the sweet spot: the **manual cases you never automated** become things the agent runs in seconds, on every change. It **complements** your CI Playwright/Cypress suite (which gates releases); Reticle is the in-loop checklist while you build.
+This is where Reticle helps most: the agent runs the **manual cases you never automated** in seconds, on every change. It **complements** your CI Playwright/Cypress suite (which gates releases); Reticle is the in-loop checklist while you build.
 
 ---
 
@@ -735,7 +737,7 @@ Reticle is cheap by design ([benchmark](token-efficiency.md)), but keep it that 
 
 ### Does this run in production?
 
-No. Keep `reticle.connect()` behind a dev guard. The SDK is side-effect-free and tree-shakes out of prod builds.
+Not by default. Keep `reticle.connect()` behind a development guard. The SDK tree-shakes out of production builds. To let an agent drive a staging or production site, install the production-mode loader. It loads nothing until a signed activation ticket is in the URL. See [Production mode](/production-mode).
 
 ### Do I have to change my components?
 
@@ -759,14 +761,14 @@ Those let an agent drive/ inspect a _separate_ browser; Reticle verifies your _o
 
 ### Multiple tabs/apps?
 
-Each is a session; pass `sessionId` to any tool when more than one is connected (`reticle_session { action: "list" }` lists them).
+Each tab is a session. Omit `sessionId`, and Reticle picks the active tab of your project. It refuses when the choice is ambiguous. Then pass a `sessionId` from `reticle_session { action: "list" }`.
 
 ---
 
 ## 15. Security & privacy
 
 - **Dev-only, localhost-only by default.** The bridge binds `127.0.0.1`; the SDK is meant for dev builds.
-- **No app data leaves your machine until you link a project.** Nothing from your app leaves the machine until you link a project (`reticle connect`, or `RETICLE_API_KEY` in CI). After that, what syncs is set by `reticle config`, and when the Harness (Reticle's model-driven explorer, which runs on the Reticle platform) drives, the platform sees the steps it drives. Secret values never leave. Baselines/recordings are local. The CLI sends anonymous, opt-out usage metrics only (random id + event names, no code and no PII; see [telemetry](telemetry.md)); opt out with `reticle telemetry disable`, `RETICLE_TELEMETRY=0`, or `DO_NOT_TRACK=1`. Feedback you or your agent deliberately send (`reticle feedback` / `reticle_session { action: "feedback" }`) is the only free text that ever leaves the machine: never passive, redacted first, and separately disabled with `RETICLE_FEEDBACK=0`.
+- **No app data leaves your machine until you link a project.** Nothing from your app leaves the machine until you link a project (`reticle connect`, or `RETICLE_API_KEY` in CI). After that, what syncs is set by `reticle config`, and when the Harness (Reticle's model-driven explorer, which runs on the Reticle platform) drives, the platform sees the steps it drives. Secret values never leave. Baselines/recordings are local. The CLI sends opt-out usage metrics: a random install id, event names and counts, and no code, no name and no IP address. Two fields can connect events to an organization: the workspace id of a linked project, and the licence id of a licensed build (see [telemetry](telemetry.md)). Opt out with `reticle telemetry disable`, `RETICLE_TELEMETRY=0` or `DO_NOT_TRACK=1`. Feedback that you or your agent send on purpose (`reticle feedback` / `reticle_session { action: "feedback" }`) is the only free text that leaves the machine. It is never sent passively, it is redacted first, and `RETICLE_FEEDBACK=0` turns it off. A reply address goes with it only when you give one with `--contact`.
 - **Network bodies aren't captured by default:** only method/url/status/timing. Body capture is opt-in and runs through a redactor (drop `password`/`token`/`secret`/… + your patterns).
 - **Additive & reversible.** Reticle patches `fetch`/History/console defensively and restores them on disconnect; it will not break the app under test.
 
@@ -821,9 +823,9 @@ All presenter DOM uses `data-reticle-*` and is excluded from snapshots/observers
 
 #### Session liveness: the HUD never gets stuck "running"
 
-A session starts on the agent's first activity and must reliably end even when the agent misbehaves. Reticle is an MCP tool, so the agent (Claude) can crash, disconnect, or simply forget to call `reticle_session { action: "end" }`, and a backgrounded tab's own timers are throttled by the browser. So **the Node server owns liveness, not the browser tab:**
+A session starts on the agent's first activity and must reliably end even when the agent misbehaves. Reticle is an MCP tool, so the agent can crash, disconnect, or forget to hand control back. The agent must call `reticle_session { action: "yield" }` before it stops. Also, the browser throttles the timers of a background tab. So **the Node server owns liveness, not the browser tab:**
 
-- **Agent goes idle / forgets to end** → a server-side reaper (immune to tab throttling) ends the session after `idleEndMs` of no agent commands and pushes the end to the browser. A backgrounded tab still receives that push, so you can switch windows and come back to a correctly-ended HUD.
+- **Agent goes idle or forgets to yield** → a server-side timer (not affected by tab throttling) ends the session after `idleEndMs` (default 5 minutes) with no agent command. It shows the human that the agent is WAITING (your turn), and pushes that to the browser. A backgrounded tab still receives that push, so you can switch windows and come back to a correctly-ended HUD.
 - **Agent (MCP client) disconnects cleanly** → every active session ends at once.
 - **Agent kills the Reticle server process** (so no push can arrive) → the SDK self-ends the session after it can't reach the bridge for `BRIDGE_LOST_MS` (~15s), showing "lost connection to Reticle."
 - **Slow-but-alive agent** → if it goes quiet long enough to auto-end and then acts again, the session **revives** automatically (an explicit `reticle_session { action: "end" }` stays terminal).
@@ -917,6 +919,7 @@ registerStore('workspace', useWorkspace); // pass the store itself → auto STAT
 
 ```ts
 import {
+  registerStore,
   tanstackQueryStore,
   jotaiStore,
   xstateStore,
@@ -945,7 +948,10 @@ A Svelte store has **no pull side at all**: `{ subscribe }` is the entire contra
 **Recoil** has no enumerable registry of live atoms and no per-atom subscription outside React, so it takes an atom map (like Jotai) plus the transaction stream from a small bridge component:
 
 ```tsx
+import { useEffect, useRef } from 'react';
 import { snapshot_UNSTABLE, useRecoilTransactionObserver_UNSTABLE } from 'recoil';
+import { registerStore, recoilStore } from '@reticlehq/browser';
+import { cartAtom, userAtom } from './atoms';
 
 function ReticleRecoilBridge() {
   const latest = useRef(snapshot_UNSTABLE());
@@ -973,7 +979,7 @@ function ReticleRecoilBridge() {
 
 Each atom comes back as `{ status, value, error }` rather than a bare value, because Recoil atoms can be async: calling `getValue()` on a pending selector **throws the pending promise**, which would lose the whole state read over one slow atom. A loading atom reports `status: 'loading'` instead of silently reading as empty.
 
-**TanStack Query is worth registering even if you register nothing else.** Its cache holds the state most likely to be wrong in a way nothing else can observe: a stale value served as fresh, a mutation that never invalidated its query, an optimistic update never rolled back. None of those fire a network request, so a network log shows silence and the DOM shows a plausible number. The cache is the only witness. The adapter exposes `status`, `fetchStatus`, `isStale` and `dataUpdatedAt` per query key, so an agent can assert the stronger property: not "the number rendered is 42" but "the number rendered came from fresh data".
+**TanStack Query is worth registering even if you register nothing else.** Its cache holds the state most likely to be wrong in a way nothing else can observe: a stale value served as fresh, a mutation that never invalidated its query, an optimistic update never rolled back. None of those fire a network request, so a network log shows silence and the DOM shows a plausible number. The cache is the only witness. The adapter exposes `status`, `fetchStatus`, `isStale`, `isInvalidated` and `dataUpdatedAt` per query key (`isInvalidated: true` after `invalidateQueries` marks the query), so an agent can assert the stronger property: not "the number rendered is 42" but "the number rendered came from fresh data".
 
 **React Context / `useState` / `useReducer`** have no store object to adapt: the value lives in the fiber tree and the only subscription is a re-render. Invert it with the hook:
 
@@ -1047,7 +1053,7 @@ reticle_run({ tool: "reticle_capabilities", args: {} })   // → { testids, sign
 
 Reticle drives actions by dispatching JS events from inside the page. That covers click, fill, type, select, submit, press, and HTML5 drag, but it **cannot** trigger browser-native pointer behavior: `onMouseEnter`/`onMouseLeave`, hover-gated reveals, and pointer-library drags rely on the browser's real hit-testing, which synthetic events don't drive.
 
-**Clicks are synthetic by default, on purpose.** Even with real input configured, `click`/`dblclick` run the occlusion-honest synthetic path (full `pointerdown→…→click` sequence + a `occluded` hit-test + off-viewport auto-scroll), reporting `inputModeReason:"synthetic-click-preferred"`. There's no coordinate gesture for the presenter HUD to intercept or to miss off-screen, and synthetic dispatch reaches the resolved element directly. Reserve native clicks for the rare `isTrusted`-gated case (native file picker, clipboard) with `args:{ native:true }`. Real input remains the path for `hover`/`drag`, which genuinely need the browser's hit-testing. Every `reticle_act` result tells you which path ran:
+**Clicks are synthetic by default, on purpose.** Even with real input configured, `click`/`dblclick` run the occlusion-honest synthetic path (full `pointerdown→…→click` sequence + an `occluded` hit-test + off-viewport auto-scroll), reporting `inputModeReason:"synthetic-click-preferred"`. There's no coordinate gesture for the presenter HUD to intercept or to miss off-screen, and synthetic dispatch reaches the resolved element directly. Reserve native clicks for the rare `isTrusted`-gated case (native file picker, clipboard) with `args:{ native:true }`. Real input remains the path for `hover`/`drag`, which genuinely need the browser's hit-testing. Every `reticle_act` result tells you which path ran:
 
 ```jsonc
 { since, dispatched, settled, inputMode: "synthetic" | "real", inputModeReason?, result, session, warning? }
@@ -1068,8 +1074,11 @@ When `inputMode` is `"synthetic"` and the target has hover/enter handlers, the r
 | `synthetic-element-press-preferred` | the `press` named a `ref`/`target`, so it stayed synthetic on purpose: dispatching AT that element reaches it exactly, while a real keyboard sends the key to whatever holds focus. A `press` with NO ref is a document key (Escape, Tab, a modifier shortcut) and does run through the real keyboard when one is configured |
 | `synthetic-multi-key-press-preferred` | the `press` named `keys`: several keys held down **together**, pressed in order and released in reverse. Only the in-page dispatcher implements that sequence; a real keyboard chord cannot express it |
 | `synthetic-key-code-press-preferred` | the `press` named an explicit `code`, which the real driver cannot send: it presses by KEY name, so `{ text: "z", code: "KeyY" }` would strike a different key than the one asked for |
+| `real-input-not-configured-for-this-session` | you passed `args:{ native:true }`, but no real-input provider is configured (no `RETICLE_CDP_URL`, no driven or leased browser). Stop asking for native input in this session |
+| `target-cannot-hold-focus` | on a lease, the `press` named an element that did not take focus, so the key stayed in the page |
+| `production-drive-presses-in-page` | a production drive runs every `press` in the page, so the production policy can judge the control that the key reaches |
 
-(No `inputModeReason` is set when real input simply isn't configured; synthetic is the expected default there.)
+(When real input is not configured, an act sets no `inputModeReason`, because synthetic is the default. The exception is an explicit `native: true`, which gets `real-input-not-configured-for-this-session`.)
 
 ### Enable real input (optional, opt-in)
 
@@ -1099,7 +1108,7 @@ Point Reticle's server at a Chrome DevTools (CDP) endpoint; it then drives **rea
 
 That's it. Reticle correlates the CDP page to your SDK session by URL; pointer actions now fire native hover/enter so hover-gated suggestion panels, tooltips, and pointer-based drag become drivable. Everything else is unchanged, and with no `RETICLE_CDP_URL` set, Reticle stays in the synthetic (zero-dependency, in-page) mode. Playwright is an optional dependency loaded only when you opt in.
 
-> **SPA navigation is handled.** The URL correlation tracks client-side route changes (`pushState`/`replaceState`/`popstate`), so real input keeps working after your app navigates into a sub-route, e.g. the hover/quick-edit cluster on a `/workspace` view stays drivable. (If you see `inputModeReason:"page-not-correlated-to-a-cdp-target"`, the reported session URL isn't correlated to a CDP target and real input silently falls back to synthetic.)
+> **SPA navigation is handled.** The URL correlation tracks client-side route changes (`pushState`/`replaceState`/`popstate`), so real input keeps working after your app navigates into a sub-route, e.g. the hover/quick-edit cluster on a `/workspace` view stays drivable. (If you see `inputModeReason:"page-not-correlated-to-a-cdp-target"`, no CDP target matches the session URL, and the act ran synthetic. The field tells you so.)
 
 > **Watching the agent (presenter).** With `present: true` the activity border now glows once while the agent is busy and fades when idle (no per-action strobe); the HUD docks **bottom-right** by default, shows a **READING** vs **ACTING** chip so you can tell observation from action at a glance, and `reticle_session { action: "narrate" }` lines are **queued** with a minimum on-screen dwell so none flash by unread.
 

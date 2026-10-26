@@ -30,8 +30,11 @@ import {
   urlForMatch,
   type ReticleEvent,
 } from '@reticlehq/core';
+import { isReticleVoice } from '../state-bookkeeping.js';
 
 export interface NetCall {
+  /** When the call settled, on the session clock. */
+  t: number;
   method: string;
   url: string;
   /** Grader haystack — the raw request when redaction rewrote `url`. */
@@ -52,6 +55,7 @@ export interface NetCall {
 export function netCall(e: ReticleEvent): NetCall {
   const status = asNumber(e.data['status']);
   return {
+    t: e.t,
     method: (asString(e.data['method']) ?? '').toUpperCase(),
     url: asString(e.data['url']) ?? '',
     matchUrl: urlForMatch(e.data),
@@ -418,19 +422,22 @@ function narrowPathOf(call: { url: string; matchUrl?: string }): string | undefi
 const PAGE_PARAMS = ['page', 'offset', 'cursor', 'after', 'start', 'skip', 'from'] as const;
 
 /** "Page 2", "page 2 of 6", "2 / 6", "2 of 6". */
-const PAGE_LABEL = /\bpage\s+(\d+)\b|\b(\d+)\s*(?:of|\/)\s*\d+\b/i;
+const PAGE_LABEL = /\bpage\s+(\d+)\b|\b(\d+)\s*(?:of|\/)\s*\d+(?:,\d{3})*\b/i;
+const RECORD_RANGE_LABEL =
+  /\b\d[\d,]*\s*(?:[-–—]|\bto\b)\s*\d[\d,]*\s+of\s+\d[\d,]*\b|\b\d[\d,]*\s+of\s+\d[\d,]*\s+(?:records|items|results)\b/i;
 
 export function pageNumber(text: unknown): number | undefined {
   if ('string' !== typeof text) return undefined;
+  if (RECORD_RANGE_LABEL.test(text)) return undefined;
   const match = PAGE_LABEL.exec(text);
   const raw = match?.[1] ?? match?.[2];
   return raw === undefined ? undefined : Number(raw);
 }
 
-/** The endpoint and its page parameter, for a GET that carries one. */
+/** The endpoint, page parameter and remaining query, for a GET that carries a page parameter. */
 export function pageRequest(
   event: ReticleEvent,
-): { path: string; param: string; value: string } | undefined {
+): { path: string; param: string; value: string; query: string } | undefined {
   if (event.type !== EventType.NET_REQUEST) return undefined;
   const method = event.data['method'];
   if ('string' !== typeof method || 'GET' !== method.toUpperCase()) return undefined;
@@ -444,7 +451,121 @@ export function pageRequest(
   }
   for (const param of PAGE_PARAMS) {
     const value = url.searchParams.get(param);
-    if (value !== null) return { path: url.pathname, param, value };
+    if (value !== null) {
+      url.searchParams.delete(param);
+      // jQuery `cache: false` changes `_` on every otherwise identical GET.
+      url.searchParams.delete('_');
+      url.searchParams.sort();
+      return { path: url.pathname, param, value, query: url.searchParams.toString() };
+    }
   }
   return undefined;
+}
+
+/**
+ * True when the app published no signal and no store change, in the window or before it.
+ *
+ * Undefined `prior` means the caller did not look before the window, so it cannot say: false. A
+ * zero-install page is the common case here. With no voice of its own, the app cannot say whether
+ * it handled a failure, so a finding that rests on that is weak rather than proof.
+ */
+export function appIsSilent(
+  events: readonly ReticleEvent[],
+  prior: readonly ReticleEvent[] | undefined,
+): boolean {
+  if (prior === undefined) return false;
+  const speaks = (e: ReticleEvent): boolean => {
+    if (e.type === EventType.SIGNAL) return !isReticleVoice(asString(e.data['name']) ?? '');
+    if (e.type !== EventType.STATE_CHANGE) return false;
+    return !isReticleVoice(asString(e.data['store']) ?? asString(e.data['name']) ?? '');
+  };
+  return !prior.some(speaks) && !events.some(speaks);
+}
+
+/**
+ * What became of the acted control's own change once its failed request settled.
+ *
+ * `ui-advanced-request-failed` asks whether the UI moved over a failed write. "Moved" was any DOM,
+ * store or route change in the window, and that reads a correct optimistic UI as a lie. Measured on
+ * a live incident feed with no SDK signals: acknowledging a row disables its button, POSTs, gets a
+ * 500, and enables the button again with a banner. The fixed build and the build that swallows the
+ * 500 both got the finding, twice each, because the feed appends a row every 800 ms on its own and
+ * the button was disabled while the request was in flight.
+ *
+ * What separates the two builds is the control's fate AFTER the failure:
+ *
+ *  - REVERTED: every change the action made to the control before the failure is back at its value
+ *    from before the action. The app handled the failure on the thing the user touched.
+ *  - PENDING: the control still shows its in-flight value and nothing on it moved after the failure.
+ *    The request was in flight; the app did not go on as if it succeeded.
+ *  - PERSISTED: the control moved on after the failure. The app went on as if it succeeded.
+ *
+ * Undefined when this cannot be told: no ref was acted on, or the control did not change before the
+ * failure settled. The caller then keeps the old window-wide reading.
+ *
+ * Only the control's own changes count, so rows the action did not touch (a live feed, a clock)
+ * decide nothing.
+ *
+ * ponytail: the control alone decides. A control rolled back while an unrelated element keeps a
+ * change (an item added to a list as its button re-enables) reads as handled. Telling that apart
+ * needs the DOM ancestry of each event, which the wire does not carry.
+ */
+export const TargetFate = {
+  PERSISTED: 'persisted',
+  REVERTED: 'reverted',
+  PENDING: 'pending',
+} as const;
+export type TargetFate = (typeof TargetFate)[keyof typeof TargetFate];
+
+/** A value the control did not have: an absent attribute, or no text. */
+const ABSENT = '\u0000absent';
+
+interface Change {
+  key: string;
+  t: number;
+  old: string;
+  now: string;
+}
+
+/** The attribute or text change this event made to `ref`, or undefined. No-op writes are skipped. */
+function changeOf(event: ReticleEvent, ref: string): Change | undefined {
+  if (event.ref !== ref) return undefined;
+  let key: string;
+  let now: string;
+  if (event.type === EventType.DOM_ATTR) {
+    key = `attr:${asString(event.data['attr']) ?? ''}`;
+    now = asString(event.data['value']) ?? ABSENT;
+  } else if (event.type === EventType.DOM_TEXT) {
+    key = 'text';
+    now = asString(event.data['text']) ?? ABSENT;
+  } else {
+    return undefined;
+  }
+  const old = asString(event.data['old']) ?? ABSENT;
+  return old === now ? undefined : { key, t: event.t, old, now };
+}
+
+export function targetFate(
+  events: readonly ReticleEvent[],
+  ref: string | undefined,
+  failedAt: number,
+): TargetFate | undefined {
+  if (ref === undefined) return undefined;
+  const before = new Map<string, string>();
+  const atFailure = new Map<string, string>();
+  const last = new Map<string, string>();
+  for (const event of events) {
+    const change = changeOf(event, ref);
+    if (change === undefined) continue;
+    if (!before.has(change.key)) before.set(change.key, change.old);
+    if (change.t <= failedAt) atFailure.set(change.key, change.now);
+    last.set(change.key, change.now);
+  }
+  if (0 === atFailure.size) return undefined;
+  const reverted = [...last].every(([key, value]) => before.get(key) === value);
+  if (reverted) return TargetFate.REVERTED;
+  const movedAfter = [...last].some(
+    ([key, value]) => (atFailure.get(key) ?? before.get(key)) !== value,
+  );
+  return movedAfter ? TargetFate.PERSISTED : TargetFate.PENDING;
 }

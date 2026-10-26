@@ -44,6 +44,69 @@ describe('parseEventPayload', () => {
     expect(r.success).toBe(true);
   });
 
+  it('parses the SDK body detail without CDP status or headers', () => {
+    const payload = {
+      id: 'n1',
+      method: 'POST',
+      url: '/api/[REDACTED]',
+      urlRaw: '/api/chat',
+      responseBody: 'data: hello\n\n',
+      responseBodyTruncated: true,
+    };
+    expect(parseEventPayload(EventType.NET_RESPONSE_BODY, payload)).toMatchObject({
+      success: true,
+      data: payload,
+    });
+  });
+
+  it.each(['id', 'method', 'url', 'responseBody'])(
+    'rejects an SDK body detail without %s, even with CDP fields',
+    (field) => {
+      const payload: Record<string, unknown> = {
+        id: 'n1',
+        method: 'POST',
+        url: '/api/chat',
+        responseBody: 'data: hello\n\n',
+        status: 200,
+        headers: {},
+      };
+      delete payload[field];
+      expect(parseEventPayload(EventType.NET_RESPONSE_BODY, payload).success).toBe(false);
+    },
+  );
+
+  it.each([
+    { responseBodyTruncated: 'true' },
+    { responseBodyReason: 'invalid' },
+    { responseBody: 42 },
+  ])('rejects invalid SDK body fields: %j', (fields) => {
+    expect(
+      parseEventPayload(EventType.NET_RESPONSE_BODY, {
+        id: 'n1',
+        method: 'POST',
+        url: '/api/chat',
+        status: 200,
+        headers: {},
+        responseBody: 'data: hello\n\n',
+        ...fields,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps wire details without a request id', () => {
+    const payload = {
+      method: 'POST',
+      url: '/api/chat',
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      responseBody: 'data: hello\n\n',
+    };
+    expect(parseEventPayload(EventType.NET_DETAIL, payload)).toMatchObject({
+      success: true,
+      data: payload,
+    });
+  });
+
   it('rejects a net.request missing its load-bearing fields', () => {
     expect(parseEventPayload(EventType.NET_REQUEST, { url: '/api/x' }).success).toBe(false);
   });

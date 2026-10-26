@@ -16,7 +16,10 @@ import {
   isSameDocumentHashAnchor,
   isSamePathnameReplace,
   isSteadyCadence,
+  appIsSilent,
   netCall,
+  TargetFate,
+  targetFate,
   pageNumber,
   pageRequest,
   recoveredByRetry,
@@ -522,12 +525,21 @@ function findWindowContradictions(
     !misattributed &&
     !failureAcknowledged(events)
   ) {
-    found.push({
-      kind: ContradictionKind.UI_ADVANCED_REQUEST_FAILED,
-      claim: 'the UI moved forward (DOM/store/route changed)',
-      counter: `${String(unexpectedWrites.length)} request(s) in the same window failed`,
-      detail: `${unexpectedWrites.map(describe).join('; ')}${declareFailureHint(unexpectedWrites)}`,
-    });
+    // The acted control's own fate after the failure decides when it can be read. See `targetFate`.
+    const failedAt = Math.max(...unexpectedWrites.map((c) => c.t));
+    const fate = targetFate(events, options.ref, failedAt);
+    if (fate === undefined || fate === TargetFate.PERSISTED) {
+      found.push({
+        // Undecided by the control, and the app says nothing about its own state: weak, not proof.
+        kind:
+          fate === undefined && appIsSilent(events, options.prior)
+            ? ContradictionKind.UI_ADVANCED_UNSIGNALLED
+            : ContradictionKind.UI_ADVANCED_REQUEST_FAILED,
+        claim: 'the UI moved forward (DOM/store/route changed)',
+        counter: `${String(unexpectedWrites.length)} request(s) in the same window failed`,
+        detail: `${unexpectedWrites.map(describe).join('; ')}${declareFailureHint(unexpectedWrites)}`,
+      });
+    }
   }
 
   // ── A write succeeded and nothing on the client moved ───────────────────────────────────────
@@ -824,7 +836,7 @@ export function findStalledPagination(
   const label = moved[0];
   if (label === undefined) return [];
 
-  const last = new Map<string, { param: string; value: string }>();
+  const last = new Map<string, { param: string; value: string; query: string }>();
   for (const event of prior) {
     const request = pageRequest(event);
     if (request !== undefined) last.set(request.path, request);
@@ -836,7 +848,8 @@ export function findStalledPagination(
     if (
       previous !== undefined &&
       previous.param === request.param &&
-      previous.value === request.value
+      previous.value === request.value &&
+      previous.query === request.query
     )
       return [
         {

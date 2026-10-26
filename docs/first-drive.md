@@ -2,6 +2,7 @@
 title: Your first drive
 description: 'Clone to a real verdict in about fifteen minutes, and the traps that cost other people a debugging session.'
 icon: play
+noindex: true
 ---
 
 The goal of this page is narrow and deliberate: **end with a real verdict on screen**, produced by Reticle against a running app, in a checkout you just cloned. Not a passing unit test, the thing the project exists to do.
@@ -57,8 +58,10 @@ node server/dist/command/cli.js verify http://localhost:4310/ --port 4400 \
 ```
 verified: yes
 reason: proved
-exit=0
+{ …the verdict as JSON… }
 ```
+
+The command exits with code 0.
 
 That is the whole product in one line: a claim, checked against a running page, with an exit code you can put in CI. `verified: "yes"` is the only pass, `unknown` means Reticle could not tell, and it exits non-zero on purpose.
 
@@ -67,6 +70,13 @@ Try making it fail, because a tool that only ever says yes is not telling you an
 ```bash
 node server/dist/command/cli.js verify http://localhost:4310/ --port 4400 \
   --expect '{"kind":"text","contains":"definitely not on this page"}'
+```
+
+On Windows PowerShell, `npx.cmd` re-parses `--expect '{...}'` and strips the inner quotes. Prefer `--expect-file`:
+
+```powershell
+'{"kind":"text","contains":"Saved"}' | Set-Content expect.json
+npx @reticlehq/server verify http://localhost:3000 --expect-file expect.json
 ```
 
 ## 3. Drive it properly, with the tools
@@ -89,23 +99,23 @@ node apps/e2e/specs/awkward-controls-test.mjs      # a file upload, an unnamed b
 node apps/e2e/specs/auth-retry-not-a-defect-test.mjs   # a 401 the app recovered from
 ```
 
-Both need step 1's processes running, and both need port 4400 free. See the traps below.
+The specs start their own bridge on port 14400 (`RETICLE_PORT`, default in `apps/e2e/gate-harness.mjs`), so the bench app must dial 14400, not the step-1 daemon on 4400. To run every spec, use `pnpm test:e2e`. It boots the API, the bench app and next-smoke on the correct ports, then runs the battery. To run one spec by hand, stop the bench app from step 1 and start it again with `RETICLE_PORT=14400`. Then run the spec. Your own daemon on 4400 can keep running.
 
 ## The things that will bite you
 
-**Port 4400 is the bridge, and something is probably on it.** Every spec binds it. If your editor has an MCP client open, its daemon owns that port and a spec dies with `EADDRINUSE`. Do **not** `kill -9` the holder: on 4400 that list includes the `reticle mcp` proxy, and killing it cuts your own agent's link with no log, because the process that writes the log is the one that dies. Use the harness, which spares the proxy:
+**The specs use port 14400, not 4400.** A daemon of your own on 4400 can keep running. If something holds 14400, a spec dies with `EADDRINUSE`. Do **not** `kill -9` whatever holds a Reticle port: on 4400 that can be the `reticle mcp` proxy, and killing it cuts your own agent's link with no log, because the process that writes the log is the one that dies. Use the harness, which spares the proxy:
 
 ```bash
-node -e "import('./apps/e2e/gate-harness.mjs').then(m=>m.freePortSafely(4400,{onNote:console.log}))"
+node -e "import('./apps/e2e/gate-harness.mjs').then(m=>m.freePortSafely(14400,{onNote:console.log}))"
 ```
 
 **The bench app self-assigns its session id.** Matching on a fixed name waits forever. Specs identify it by the URL it serves from. Copy that pattern.
 
 **The bench app shows a login first, and views are reached from the nav.** A query parameter does not select a view. Log in, click the nav item, then drive.
 
-**Fixtures are in a second repo.** The apps in `apps/` are all already instrumented, so none of them can tell you whether a fresh install still works. That question lives in [`reticle-fixtures`](https://github.com/reticlehq/reticle-fixtures), which keeps a pristine `clean` branch of real third-party apps plus `main` and `reticle/<version>`. See [`fixtures.md`](fixtures.md).
+**Fixtures are in a second repo.** The apps in `apps/` are all already instrumented, so none of them can tell you whether a fresh install still works. That question lives in `reticle-fixtures`, a private repository that the maintainers run. It keeps a pristine `clean` branch of real third-party apps plus `main` and `reticle/<version>`. See [Fixtures](/fixtures).
 
-**Telemetry fails silently.** Nothing throws, no test reddens, the data is just permanently gone. Read [`telemetry-contract.md`](telemetry-contract.md) before touching anything that emits.
+**Telemetry fails silently.** Nothing throws, no test reddens, the data is just permanently gone. Read [`contributing/telemetry/contract.md`](https://github.com/reticlehq/reticle/blob/main/contributing/telemetry/contract.md) before touching anything that emits.
 
 **`core` is the contract and may not gain dependencies.** Anything crossing browser ↔ bridge ↔ agent is defined there as a constant plus a zod schema. Never inline a wire string elsewhere.
 
@@ -115,15 +125,15 @@ Run the fast gate before every commit. The others only when you touch what they 
 
 | gate | when | measured |
 | --- | --- | --- |
-| `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit` | always | ~2 min |
+| `pnpm verify` (`format:check`, `lint`, `typecheck`, `test:unit`) | always | ~2 min |
 | `pnpm test:e2e` | the tool surface, the wire contract, or an observer | ~8 min |
 | `pnpm test:e2e:desktop` | Electron, Tauri, the IPC observer, desktop capture | ~3 min, needs a Rust toolchain |
 | `pnpm gate:install` | `init`, `vite-plugin`, `next`, `babel-plugin` | ~15 min |
 
-`format:check` is first because CI enforces it and `pnpm lint` does not run it, a branch with all four heavy gates green locally can still turn CI red on formatting alone.
+`pnpm verify` runs `format:check` first, because CI enforces formatting and `pnpm lint` does not check it. Without it, a branch that passes the other gates locally can still fail CI on formatting.
 
 ## Where to go next
 
 - [`CONTRIBUTING.md`](https://github.com/reticlehq/reticle/blob/main/CONTRIBUTING.md): the rules, the layout, and the PR flow
-- [`architecture.md`](architecture.md): how the pieces fit
+- [Architecture](/architecture): how the pieces fit
 - Issues labelled **good first issue**. Each names the file to start in, how to reproduce, and how you will know you are done. If one is still too vague, say so on the issue; that feedback is worth more than a guess.

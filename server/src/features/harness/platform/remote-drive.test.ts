@@ -552,10 +552,15 @@ describe('a drive with a spec', () => {
         tools: [{ name: 'reticle_look', description: 'read the page', inputSchema: {} }],
       }),
       expect.objectContaining({
-        results: [{ seq: 1, ok: true, result: { tree: 'button "Pay"' }, ms: 0 }],
+        // When each call started and ended on this machine, not only how long it took.
+        results: [
+          { seq: 1, ok: true, result: { tree: 'button "Pay"' }, ms: 0, startedAt: 0, endedAt: 0 },
+        ],
       }),
       expect.objectContaining({
-        results: [{ seq: 2, ok: false, error: 'unknown reticle tool', ms: 0 }],
+        results: [
+          { seq: 2, ok: false, error: 'unknown reticle tool', ms: 0, startedAt: 0, endedAt: 0 },
+        ],
       }),
     ]);
     // The platform decided the drive, so it keeps the result; the daemon posts none of its own.
@@ -572,19 +577,22 @@ describe('a tool session over a network that fails', () => {
   const session = (statuses: (number | 'drop')[], replies: unknown[]) => {
     const asks: { ask: unknown; results: unknown }[] = [];
     const fetch = (url: string, init: RequestInit): Promise<Response> => {
-      if (url.endsWith('/next'))
+      if (url.endsWith('/next')) {
         return Promise.resolve(
           new Response(
             JSON.stringify({ drive: { id: 'ld_r', goal: 'pay', spec: { mode: 'platform' } } }),
           ),
         );
+      }
       const body = JSON.parse('string' === typeof init.body ? init.body : '{}') as {
         ask: unknown;
         results: unknown;
       };
       asks.push({ ask: body.ask, results: body.results });
       const status = statuses.shift() ?? 200;
-      if ('drop' === status) return Promise.reject(new Error('socket hang up'));
+      if ('drop' === status) {
+        return Promise.reject(new Error('socket hang up'));
+      }
       return Promise.resolve(
         new Response(JSON.stringify(200 === status ? replies.shift() : {}), { status }),
       );

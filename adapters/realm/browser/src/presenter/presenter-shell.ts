@@ -1,6 +1,5 @@
 import { appModalOpen } from '@/dom/dom-ignore.js';
 import type { AgentLink, HarnessConfig, HarnessDrive, LastDrive } from '@reticlehq/core';
-import type { HarnessGateView } from './presenter-harness-row.js';
 import { PresenterReport, reportPanelHtml } from './presenter-report.js';
 import type { AccountState } from '@reticlehq/core';
 import { paintToolbarAccount, TOOLBAR_ACCOUNT_ATTR } from './presenter-workspace.js';
@@ -20,10 +19,11 @@ import {
   SETTINGS_ATTR,
   SETTINGS_BTN_ATTR,
   MINIMISED_STORAGE_KEY,
+  OPEN_STORAGE_KEY,
 } from './presenter-config.js';
 import { paintCarousel } from './carousel/carousel.js';
 import { panelSlides } from './carousel/panel-slides.js';
-import { paintRail, RAIL_HTML, RAIL_PROMO_ATTR } from './presenter-frame.js';
+import { paintRail, RAIL_HTML, RAIL_PROMO_ATTR, RAIL_SIGNIN_HTML } from './presenter-frame.js';
 import { FAB_TOGGLE_HTML, MARK_SVG } from './chrome/presenter-brand.js';
 import { settleLogAtLatest } from './chrome/presenter-log.js';
 import { installHudDragHandles, installHudPositionGuards } from './presenter-drag.js';
@@ -185,10 +185,10 @@ export class HudShell {
   paintAgent(link: AgentLink | undefined): void {
     this.#chatViews.paintAgent(link);
   }
-  paintHarness(config: HarnessConfig | undefined, gate?: HarnessGateView): void {
+  paintHarness(config: HarnessConfig | undefined): void {
     this.#pushedHarness = config;
-    this.#settings.paintHarness(config, gate);
-    this.#chatViews.paintHarness(config, gate);
+    this.#settings.paintHarness(config);
+    this.#chatViews.paintHarness(config);
     this.#repaintPromoIfMoved();
   }
 
@@ -311,6 +311,7 @@ export class HudShell {
           <div class="${HUD_LOG_WELL_CLASS}"><div ${logAttr}></div></div>
           ${flowsHtml}
         </section>
+        ${RAIL_SIGNIN_HTML}
         ${footHtml}
       </div>
       ${FLOWS_PAGE_HTML}
@@ -416,6 +417,7 @@ export class HudShell {
       (e) => {
         e.preventDefault();
         e.stopPropagation();
+        rememberLeftOpen(true);
         this.showChat();
       },
       { signal },
@@ -426,6 +428,7 @@ export class HudShell {
       (e) => {
         e.preventDefault();
         e.stopPropagation();
+        rememberLeftOpen(false);
         this.closeChat();
       },
       { signal },
@@ -458,6 +461,7 @@ export class HudShell {
           this.#suppressFabClick = false;
           return;
         }
+        rememberLeftOpen(true);
         this.expand();
       },
       { signal },
@@ -466,6 +470,7 @@ export class HudShell {
       'click',
       (e) => {
         e.stopPropagation();
+        rememberLeftOpen(false);
         this.collapse();
       },
       { signal },
@@ -654,6 +659,7 @@ export class HudShell {
       return;
     }
     if (this.isChatOpen()) {
+      rememberLeftOpen(false);
       this.closeChat();
       return;
     }
@@ -662,6 +668,7 @@ export class HudShell {
       return;
     }
     if (!this.isCollapsed()) {
+      rememberLeftOpen(false);
       this.collapse();
     }
   };
@@ -696,11 +703,42 @@ export function rememberMinimised(minimised: boolean): void {
   }
 }
 
+/** Did the person leave the panel open, in this browser? Guarded like the minimise memory. */
+export function wasLeftOpen(): boolean {
+  try {
+    return '1' === globalThis.localStorage.getItem(OPEN_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+}
+
+/** Record the person's own choice: they opened the panel, or closed it. Never called for an agent. */
+export function rememberLeftOpen(open: boolean): void {
+  try {
+    if (open) {
+      globalThis.localStorage.setItem(OPEN_STORAGE_KEY, '1');
+    } else {
+      globalThis.localStorage.removeItem(OPEN_STORAGE_KEY);
+    }
+  } catch {
+    /* a page that refuses storage still gets a HUD */
+  }
+}
+
 /**
- * Should session start open the chat by itself?
+ * Should a page load open the panel? Only when the person left it open, and did not minimise it in
+ * this tab since. A fresh profile has nothing to show yet, so it gets the dock only: an open panel
+ * there covered the app's own controls before any agent had done anything.
+ */
+export function shouldReopenPanel(): boolean {
+  return wasLeftOpen() && !wasMinimised();
+}
+
+/**
+ * Should the agent's first action open the chat by itself?
  *
  * Two different questions, and collapsing them is what the field reported. `autoOpenChat` is a
- * PREFERENCE: should the chat appear with no click at all, at session start. Whether somebody has
+ * PREFERENCE: should the chat appear with no click at all, when an agent starts to act. Whether somebody has
  * already minimised the panel IN THIS TAB is not that question — they answered it by hand, to reach
  * a control underneath, and a reload is not them changing their mind.
  *

@@ -141,6 +141,28 @@ function describeAbsentMiss(match: MatchResult, state: ElementState | undefined)
   );
 }
 
+/**
+ * Why a match under a framework error dialog proves nothing. The element is in the DOM, but a user
+ * sees only the dialog, so a `yes` here was a false green (#1768).
+ */
+function describeCovered(dialog: string): string {
+  return (
+    `a ${dialog} covers the page, so a user cannot see this match. ` +
+    'Read the error in the dialog and fix it, then check again'
+  );
+}
+
+/**
+ * Why a match that a person cannot read proves nothing. The text is in the DOM, but its colour is
+ * almost the colour behind it, or it is almost transparent. A `yes` here was a false green (#1797).
+ */
+function describeUnreadable(why: string): string {
+  return (
+    `the text is on the page, but a user cannot read it (${why}). ` +
+    'Fix the colour or the opacity, then check again'
+  );
+}
+
 async function matchOnce(
   session: PredicateSession,
   query: ElementQuery,
@@ -337,6 +359,30 @@ export async function evalElement(
   }
   const announced = substantiveMatches(query, match.elements);
   if (match.matched && (announced.length > 0 || 0 === match.elements.length)) {
+    if (match.coveredBy !== undefined) {
+      const reason = describeCovered(match.coveredBy);
+      return {
+        pass: false,
+        failureReason: reason,
+        inconclusive: reason,
+        observed: `element matching ${subject} is in the DOM under the ${match.coveredBy}`,
+        expected: `an element matching ${subject} that a user can see`,
+        assertion: 'element.covered',
+        evidence: announced,
+      };
+    }
+    if (match.unreadable !== undefined) {
+      const reason = describeUnreadable(match.unreadable);
+      return {
+        pass: false,
+        failureReason: reason,
+        inconclusive: reason,
+        observed: `element matching ${subject} is in the DOM, and ${match.unreadable}`,
+        expected: `an element matching ${subject} that a user can read`,
+        assertion: 'element.readable',
+        evidence: announced,
+      };
+    }
     return { pass: true, evidence: announced };
   }
   // Matched, but every match was a mounted-and-empty live region. Reported as its own failure rather

@@ -21,7 +21,7 @@ import type { ToolDeps } from './tools.js';
 import type { Session } from '@/portal/session/session.js';
 import type { SessionManager } from '@/portal/session/session-manager.js';
 import { RecordingStore } from '@/language/flows/recording/tape/recordings.js';
-import { startPathMismatchHint } from '@/language/flows/flow-replay-run.js';
+import { startPathMismatchHint } from '@/language/flows/flow-start-path.js';
 import {
   recordingBacktrackWarning,
   routesFromRecording,
@@ -29,7 +29,9 @@ import {
 
 const tool = (name: string) => {
   const t = READ_TOOLS.find((x) => x.name === name);
-  if (t === undefined) throw new Error(`no ${name}`);
+  if (t === undefined) {
+    throw new Error(`no ${name}`);
+  }
   return t;
 };
 

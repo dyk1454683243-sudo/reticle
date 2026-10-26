@@ -132,9 +132,16 @@ export function assertSequenceSteps(steps: readonly unknown[]): void {
      * the very thing it just wrote. Same false green as an unreadable key, through a key this tool
      * does read.
      */
-    if (step['expect'] !== undefined && !PredicateSchema.safeParse(step['expect']).success) {
+    const parsed =
+      step['expect'] === undefined ? undefined : PredicateSchema.safeParse(step['expect']);
+    if (parsed !== undefined && !parsed.success) {
+      // The schema's own words, such as the keys it saw when it could not tell the kind.
+      const said = parsed.error.issues
+        .filter((issue) => 'custom' === issue.code)
+        .map((issue) => ` ${issue.message}.`)
+        .join('');
       throw new Error(
-        `step ${String(i)} carries an \`expect\` this tool cannot parse. ` +
+        `step ${String(i)} carries an \`expect\` this tool cannot parse.${said} ` +
           'A consequence is a predicate object with a `kind` — e.g. { kind: "signal", name: ' +
           '"order:placed" }, { kind: "element", by: "testid", value: "receipt" }, or ' +
           '{ kind: "settled" } — the same shape reticle_act_and_wait takes as `until`. ' +

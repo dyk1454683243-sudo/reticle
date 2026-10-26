@@ -328,7 +328,7 @@ describe('what a step reports', () => {
 
 /**
  * A sub-step reads `{ ref | target, action, args }` and NOTHING else. The schema is
- * `z.record(z.unknown())`, so any other key is accepted and dropped — and the keys an agent is most
+ * `z.record(z.string(), z.unknown())`, so any other key is accepted and dropped — and the keys an agent is most
  * likely to reach for are the ones that claim a consequence, because `until` is what the neighbouring
  * act_and_wait calls its assertion.
  *
@@ -450,6 +450,22 @@ describe('an expect this tool cannot parse', () => {
         { ref: 'e2', action: 'click', expect: 'the receipt appears' },
       ]),
     ).toThrow(/Nothing was acted on/);
+  });
+
+  // Real agents wrote these with no `kind`, and each lost a call to the refusal.
+  it('accepts a predicate with no kind when its keys name exactly one kind', () => {
+    expect(() =>
+      assertSequenceSteps([
+        { ref: 'e1', action: 'click', expect: { text: 'Count is 1' } },
+        { ref: 'e2', action: 'click', expect: { allOf: [{ text: 'a' }, { pathname: '/b' }] } },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('names the keys it saw and the kinds there are, when the keys fit no one kind', () => {
+    expect(() =>
+      assertSequenceSteps([{ ref: 'e1', action: 'click', expect: { name: 'order:placed' } }]),
+    ).toThrow(/`name`[\s\S]*one of element, text/);
   });
 
   it('still accepts every predicate the grader understands', () => {

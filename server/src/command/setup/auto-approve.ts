@@ -20,9 +20,10 @@
  *    the in-app step to take instead. Nothing is written at all for an agent that is not installed:
  *    an absent agent has no Accept button to remove.
  *
- * Codex is absent by design: its approval policy is global (`approval_policy`), so there is no
- * reticle-shaped rule to write, and its config is TOML, which this repo never rewrites. Its
- * headless form, `codex exec`, does not prompt at all — which is the form the drive uses.
+ * Codex has a per-server rule, `default_tools_approval_mode`, in the `[mcp_servers.reticle]` table
+ * that `codex mcp add` writes. Its config is TOML, which this repo does not reformat: the grant adds
+ * one line under our own table header and changes no other line. When that header is not there in
+ * its plain form, nothing is written and the setting is named instead.
  */
 
 import { joinFor, parentOf, type PlatformPaths } from './agent-configs.js';
@@ -48,6 +49,12 @@ export interface ApprovalGrant {
    * a grant is only ever merged into a file the user already owns, never created.
    */
   readonly supersedesInApp?: boolean;
+  /**
+   * For a config that is not JSON: the new text, or null when the edit is not safe. Then nothing is
+   * written and `manual` tells the user what to add.
+   */
+  readonly editText?: (current: string) => string | null;
+  readonly manual?: (file: string) => string;
 }
 
 const home = (path: string): PlatformPaths => ({ darwin: path, linux: path, win32: path });
@@ -69,6 +76,30 @@ function addToList(
   if (list.includes(value)) return current;
   const next = { ...scope, [key]: [...list, value] };
   return null === outer ? next : { ...current, [outer]: next };
+}
+
+const CODEX_RULE = 'default_tools_approval_mode = "approve"';
+const CODEX_TABLE = new RegExp(
+  `^\\s*\\[\\s*mcp_servers\\s*\\.\\s*(?:${RETICLE_KEY}|"${RETICLE_KEY}"|'${RETICLE_KEY}')\\s*\\]\\s*(?:#.*)?$`,
+);
+const CODEX_MODE_KEY = /^\s*default_tools_approval_mode\s*=/;
+const TOML_HEADER = /^\s*\[/;
+
+/** One line under our `[mcp_servers.reticle]` header. A mode the user set is kept. */
+function codexApprove(current: string): string | null {
+  const eol = current.includes('\r\n') ? '\r\n' : '\n';
+  const lines = current.split(/\r?\n/);
+  const at = lines.findIndex((line) => CODEX_TABLE.test(line));
+  if (at < 0) {
+    return null;
+  }
+  const next = lines.findIndex((line, i) => i > at && TOML_HEADER.test(line));
+  const table = lines.slice(at + 1, next < 0 ? undefined : next);
+  if (table.some((line) => CODEX_MODE_KEY.test(line))) {
+    return current;
+  }
+  lines.splice(at + 1, 0, CODEX_RULE);
+  return lines.join(eol);
 }
 
 export const APPROVAL_GRANTS: readonly ApprovalGrant[] = [
@@ -130,6 +161,17 @@ export const APPROVAL_GRANTS: readonly ApprovalGrant[] = [
       return { ...c, mcpServers: { ...servers, [RETICLE_KEY]: { ...entry, trust: true } } };
     },
   },
+  {
+    id: 'codex',
+    name: 'Codex',
+    paths: home('.codex/config.toml'),
+    markers: [home('.codex')],
+    rule: `mcp_servers.${RETICLE_KEY}.${CODEX_RULE}`,
+    grant: (c) => c,
+    editText: codexApprove,
+    manual: (file) =>
+      `add \`${CODEX_RULE}\` under [mcp_servers.${RETICLE_KEY}] in ${file}. Without it, Codex asks before every reticle tool call, and refuses each one under approval_policy = "never".`,
+  },
 ];
 
 export const ApprovalOutcome = {
@@ -176,6 +218,23 @@ export function grantAutoApproval(
     if (!installed) return { ...base, outcome: ApprovalOutcome.ABSENT };
     try {
       const existed = io.exists(file);
+      if (grant.editText !== undefined) {
+        const current = existed ? io.readFile(file) : '';
+        const next = grant.editText(current);
+        if (null === next) {
+          const warn = grant.manual?.(file);
+          return {
+            ...base,
+            outcome: ApprovalOutcome.DEFERRED,
+            ...(warn === undefined ? {} : { warn }),
+          };
+        }
+        if (next === current) {
+          return { ...base, outcome: ApprovalOutcome.ALREADY };
+        }
+        io.writeFile(file, next);
+        return { ...base, outcome: ApprovalOutcome.GRANTED };
+      }
       if (true === grant.supersedesInApp && !existed) {
         return {
           ...base,

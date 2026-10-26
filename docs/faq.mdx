@@ -5,14 +5,17 @@ description: Does it run in production, does it need React, does it replace Play
 icon: circle-question
 ---
 
-Reticle is a dev-only, localhost-only verification layer an AI coding agent uses to prove a change actually worked in your running app. It does not run in production, it does not need React, and it does not replace Playwright. The rest of the questions people actually ask are below.
+Reticle is a verification layer that an AI coding agent uses to prove that a change worked in your running app. By default it runs only in development, on localhost. It does not need React, and it does not replace Playwright. The rest of the questions people actually ask are below.
 
 <AccordionGroup>
 
 <Accordion title="Does this run in production?">
-  No, and it is built so that it cannot easily be made to. Keep `reticle.connect()` behind a dev
-  guard; the SDK is side-effect-free and tree-shakes out of production builds. In a production `vite
-  build`, the Vite plugin swaps the SDK for an inert stub and injects nothing.
+  Not by default. Keep `reticle.connect()` behind a dev guard. The SDK has no side effects and
+  tree-shakes out of production builds. In a production `vite build`, the Vite plugin replaces the
+  SDK with an inert stub and injects nothing.
+
+To let an agent drive a staging or production deployment, use [production mode](/production-mode). It is opt-in. A visitor who did not activate it gets no SDK, no socket and no prompt.
+
 </Accordion>
 
 <Accordion title="Do I have to change my components?">
@@ -58,7 +61,7 @@ Reticle scopes to your project and prefers the active tab, and it **refuses rath
 
 </Accordion>
 
-<Accordion title="Why did I get `verified: \"unknown\"` on something that clearly worked?">
+<Accordion title='Why did I get `verified: "unknown"` on something that clearly worked?'>
   Because Reticle could not confirm it saw the whole story, and it will not call that a pass.
 
 The most common cause is a **throttled tab**: a backgrounded browser tab has its timers suppressed, which suppresses the quiescence detection used to decide the page has settled. Focus the tab, or drive a dedicated context.
@@ -68,7 +71,7 @@ If you believe an `unknown` is wrong, report it. Reticle's own response says as 
 </Accordion>
 
 <Accordion title="Does my data leave the machine?">
-  Reticle is dev-only and localhost-only. Nothing from your app leaves the machine until you link a project (`reticle connect`, or `RETICLE_API_KEY` in CI). After that, what syncs is set by `reticle config`, and when the Harness drives, the platform sees the steps it drives. Secret values never leave. Credential-shaped values are redacted before they leave the page. You will see `[REDACTED]` in request bodies without configuring anything.
+  By default Reticle runs only in development, on localhost. Nothing from your app leaves the machine until you link a project (`reticle connect`, or `RETICLE_API_KEY` in CI). After that, what syncs is set by `reticle config`, and when the Harness drives, the platform sees the steps it drives. Secret values never leave. Credential-shaped values are redacted before they leave the page. You will see `[REDACTED]` in request bodies without configuring anything.
 
 Anonymous usage counts are sent by default, separately, and carry nothing from your app. `reticle telemetry disable`, `RETICLE_TELEMETRY=0` or `DO_NOT_TRACK=1` turns them off.
 

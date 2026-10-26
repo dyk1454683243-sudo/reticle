@@ -1,6 +1,7 @@
 import { readTestId, testIdSelector } from '@/dom/addressing/testid-attr.js';
 import { EventType, REDACTED_VALUE, TruncationChannel } from '@reticlehq/core';
-import { getAccessibleName, getRole, isSensitiveField, isVisible } from '@/dom/a11y.js';
+import { getAccessibleName, getRole, isSensitiveField } from '@/dom/a11y.js';
+import { isVisible } from '@/dom/visibility.js';
 import { refs } from '@/dom/addressing/refs.js';
 
 /**
@@ -11,7 +12,9 @@ import { refs } from '@/dom/addressing/refs.js';
  */
 function regionKeyOf(target: Node): string | undefined {
   const el = isElement(target) ? target : null;
-  if (null === el) return undefined;
+  if (null === el) {
+    return undefined;
+  }
   const labelled = el.closest(testIdSelector());
   return (labelled ? readTestId(labelled) : null) ?? refs.refFor(el);
 }
@@ -42,7 +45,9 @@ const WATCHED_ATTRS = [
 const MAX_ATTR_VALUE_LEN = 120;
 
 function capValue(value: string | null): string | undefined {
-  if (null === value) return undefined;
+  if (null === value) {
+    return undefined;
+  }
   return value.length > MAX_ATTR_VALUE_LEN ? `${value.slice(0, MAX_ATTR_VALUE_LEN)}…` : value;
 }
 
@@ -80,15 +85,23 @@ const MOUNT_SCAN_LIMIT = 40;
 function describeMount(node: Element): { role: string; name: string; el: Element } | undefined {
   const role = getRole(node);
   const name = getAccessibleName(node);
-  if (isMeaningful(role, name)) return { role, name, el: node };
+  if (isMeaningful(role, name)) {
+    return { role, name, el: node };
+  }
   let scanned = 0;
   for (const child of node.querySelectorAll('*')) {
-    if (scanned >= MOUNT_SCAN_LIMIT) return undefined;
+    if (scanned >= MOUNT_SCAN_LIMIT) {
+      return undefined;
+    }
     scanned += 1;
-    if (isUnobserved(child)) continue;
+    if (isUnobserved(child)) {
+      continue;
+    }
     const childRole = getRole(child);
     const childName = getAccessibleName(child);
-    if (isMeaningful(childRole, childName)) return { role: childRole, name: childName, el: child };
+    if (isMeaningful(childRole, childName)) {
+      return { role: childRole, name: childName, el: child };
+    }
   }
   return undefined;
 }
@@ -107,7 +120,9 @@ function textOf(nodes: NodeList): string | undefined {
   for (const node of nodes) {
     // The numeric nodeType, not `Node.TEXT_NODE`: the global `Node` constructor is not guaranteed to
     // exist wherever this runs, and referencing it threw a ReferenceError rather than degrading.
-    if (node.nodeType !== TEXT_NODE) continue;
+    if (node.nodeType !== TEXT_NODE) {
+      continue;
+    }
     out += node.nodeValue ?? '';
   }
   const trimmed = out.trim();
@@ -130,6 +145,30 @@ function secretAttr(el: Element, attr: string): boolean {
   return !SAFE_ON_SECRET.has(attr) && !attr.startsWith('aria-') && isSensitiveField(el);
 }
 
+/** How far up a text change looks for the testid that names it. */
+const TESTID_DEPTH = 3;
+/** Testid elements whose arrival text one batch reports; past this they are counted as dropped. */
+const MAX_INITIAL_TEXTS = 50;
+
+/** The `data-testid` of `el` or its nearest ancestor within TESTID_DEPTH, so a change has a name. */
+function testidNear(el: Element): string | undefined {
+  let at: Element | null = el;
+  for (let depth = 0; at !== null && depth <= TESTID_DEPTH; depth += 1) {
+    const id = readTestId(at);
+    if (id !== null && id.length > 0) {
+      return id;
+    }
+    at = at.parentElement;
+  }
+  return undefined;
+}
+
+/** `{ testid }` when there is one, else nothing: the field is absent, never empty. */
+const named = (el: Element): { testid?: string } => {
+  const testid = testidNear(el);
+  return testid === undefined ? {} : { testid };
+};
+
 export function installDom(emit: Emit): Teardown {
   // Installed here rather than in the bootstrap list because this observer is the registry's reason
   // for existing, and the ordering matters: a root attached between the two would be missed by both.
@@ -139,6 +178,7 @@ export function installDom(emit: Emit): Teardown {
     let added = 0;
     let removed = 0;
     let changed = 0;
+    let initials = 0;
     // Count element nodes dropped purely because a per-batch cap was already reached. The cap is on
     // MEANINGFUL events, so it is only hit after a real flood — the count is a raw over-estimate
     // (it can include not-yet-inspected noise) but `dropped > 0` honestly means "this batch was capped".
@@ -187,7 +227,7 @@ export function installDom(emit: Emit): Teardown {
           const old = hide ? undefined : capValue(record.oldValue?.trim() ?? null);
           emit(
             EventType.DOM_TEXT,
-            { text, ...(old === undefined ? {} : { old }) },
+            { text, ...(old === undefined ? {} : { old }), ...named(parent) },
             refs.refFor(parent),
           );
         }
@@ -204,8 +244,9 @@ export function installDom(emit: Emit): Teardown {
       if (textOf(record.addedNodes) !== undefined || textOf(record.removedNodes) !== undefined) {
         const parent = isElement(record.target) ? record.target : null;
         if (parent !== null && !isUnobserved(parent)) {
-          if (changed >= MAX_PER_BATCH) dropped += 1;
-          else {
+          if (changed >= MAX_PER_BATCH) {
+            dropped += 1;
+          } else {
             changed += 1;
             // The element's text AFTER the mutation, so a cleared node reports '' rather than the
             // text that just left — the reader wants what is on screen now.
@@ -214,21 +255,49 @@ export function installDom(emit: Emit): Teardown {
             const old = hide ? undefined : capValue(textOf(record.removedNodes) ?? null);
             emit(
               EventType.DOM_TEXT,
-              { text, ...(old === undefined ? {} : { old }) },
+              { text, ...(old === undefined ? {} : { old }), ...named(parent) },
               refs.refFor(parent),
             );
           }
         }
       }
       for (const node of record.addedNodes) {
-        if (!isElement(node)) continue;
+        if (!isElement(node)) {
+          continue;
+        }
         if (added >= MAX_PER_BATCH) {
           dropped += 1;
           continue;
         }
-        if (isUnobserved(node)) continue;
+        if (isUnobserved(node)) {
+          continue;
+        }
+        // The text each named element ARRIVED with: the baseline a later change, or the lack of
+        // one, is read against. Without it "never changed" and "never shown" look the same.
+        const testids = [node, ...Array.from(node.querySelectorAll(testIdSelector()))].filter(
+          (el) => readTestId(el) !== null,
+        );
+        for (const el of testids) {
+          const text = (el.textContent ?? '').trim();
+          if (0 === text.length) {
+            continue;
+          }
+          if (initials >= MAX_INITIAL_TEXTS) {
+            dropped += 1;
+            continue;
+          }
+          initials += 1;
+          const shown = isSensitiveField(el) ? REDACTED_VALUE : text.slice(0, 80);
+          emit(
+            EventType.DOM_TEXT,
+            { text: shown, testid: readTestId(el) ?? '', initial: true },
+            refs.refFor(el),
+          );
+        }
         const mounted = describeMount(node);
-        if (mounted === undefined) continue;
+        if (mounted === undefined) {
+          continue;
+        }
         const { role, name } = mounted;
         added += 1;
         // The ref points at what arrived, not at the wrapper it arrived in: a wrapper is not
@@ -240,11 +309,15 @@ export function installDom(emit: Emit): Teardown {
           LIVE_ROLES.has(role) ||
           'true' === node.getAttribute('aria-modal')
         ) {
-          if (isVisible(node)) emit(EventType.VISIBLE_SHOWN, { role, name }, ref);
+          if (isVisible(node)) {
+            emit(EventType.VISIBLE_SHOWN, { role, name }, ref);
+          }
         }
       }
       for (const node of record.removedNodes) {
-        if (!isElement(node)) continue;
+        if (!isElement(node)) {
+          continue;
+        }
         if (removed >= MAX_PER_BATCH) {
           dropped += 1;
           continue;
@@ -259,7 +332,9 @@ export function installDom(emit: Emit): Teardown {
         // Same reasoning as the mount above, in reverse: a dismissed modal leaves as ONE record
         // carrying its wrapper, so filtering on the wrapper's own role makes the dismissal silent.
         const gone = describeMount(node);
-        if (gone === undefined) continue;
+        if (gone === undefined) {
+          continue;
+        }
         const { role, name } = gone;
         removed += 1;
         // A removed node has no ref (it is gone), so the CONTAINER is the only stable identity — and it
@@ -268,7 +343,9 @@ export function installDom(emit: Emit): Teardown {
       }
     }
     // Never silent: a capped batch tells the ledger its DOM counts understate reality.
-    if (dropped > 0) emit(EventType.TRUNCATED, { channel: TruncationChannel.DOM, dropped });
+    if (dropped > 0) {
+      emit(EventType.TRUNCATED, { channel: TruncationChannel.DOM, dropped });
+    }
   });
 
   const options: MutationObserverInit = {
@@ -285,7 +362,9 @@ export function installDom(emit: Emit): Teardown {
   // A MutationObserver does NOT cross a shadow boundary, so every root needs its own observation.
   // Without this, a click that changed text inside a web component produced an empty observe window —
   // the same shape as an app that ignored the click entirely.
-  for (const root of capturedRoots()) observer.observe(root, options);
+  for (const root of capturedRoots()) {
+    observer.observe(root, options);
+  }
   const unsubscribe = onShadowRoot((root) => observer.observe(root, options));
 
   // Same-origin frame documents are separate node trees for the same reason, with the same symptom.

@@ -73,7 +73,7 @@ Plus a dynamic import of your dev module if one exists. It looks for `src/reticl
 | `captureErrorBodies` | `boolean` | `true`: a failed response keeps its body. `VITE_RETICLE_NO_ERROR_BODIES=1` turns it off |
 | `testIdAttribute` | `string` | `.reticle.json`'s `testIdAttribute`, else `data-testid` |
 | `allowNonLocalhost` | `boolean` | `false`. Lets Reticle run off localhost; a pairing token is still required. Also `VITE_RETICLE_ALLOW_NON_LOCALHOST=1` |
-| `exposePresenter` | `boolean` | `false`. Contributors only: makes Reticle's own presenter visible to its tools |
+| `exposePresenter` | `boolean` | `false`. Contributors only: makes Reticle's own presenter visible to its tools. Also `VITE_RETICLE_EXPOSE_PRESENTER=1` |
 | `onWarn` | `(message: string) => void` | `console.warn` |
 
 `reticle({ present: false })` still lets the plugin create and configure the connection; it only hides Reticle's visible presenter. `reticle({ inject: false })` disables that generated connection, so your application must call `connect()` itself. In that manual call, pass the pairing token explicitly:

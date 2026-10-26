@@ -24,8 +24,30 @@ npm i -D @reticlehq/browser
 
 ```ts
 import { reticle } from '@reticlehq/browser';
-if (import.meta.env.DEV) reticle.connect();
+
+if (import.meta.env.DEV) {
+  // reticle.local.js holds this machine's pairing token. Do not commit it.
+  import('./reticle.local.js')
+    .catch(() => ({}))
+    .then((local) => reticle.connect({ token: local.token }));
+}
 ```
+
+The bridge refuses a connect without the pairing token, also on localhost. `reticle init` writes `reticle.local.js` at the project root and adds it to `.gitignore`. Change the import path so that it points to that file. If you did not run `reticle init`, make the file yourself from the token that the daemon keeps in `~/.reticle/pairing-token`:
+
+```bash
+printf "export const token = '%s';\n" "$(cat ~/.reticle/pairing-token)" > reticle.local.js
+echo reticle.local.js >> .gitignore
+```
+
+With the Vite plugin and `inject: false`, pass `token: __RETICLE_TOKEN__` instead. See [the Vite plugin](/packages/vite-plugin).
+
+## Subpaths
+
+| Subpath | What it is |
+| --- | --- |
+| `./activate` | `activate({ publicKey })`. Connects the SDK on a staging or production deployment, but only when the page URL carries a valid signed ticket in the `reticle_activate` parameter. Without the parameter it does nothing. See [Production mode](/production-mode) |
+| `./inject` | The SDK build that a hosted verifier puts into a page from outside. An app does not import it |
 
 ## The `reticle` singleton
 
@@ -36,6 +58,8 @@ One instance, memoized on `globalThis` so hot module replacement does not create
 | `connect`           | `(options?: ReticleConnectOptions) => void`                |
 | `connected`         | `get connected(): boolean`                                 |
 | `signal`            | `(name: string, data?: Record<string, unknown>) => void`   |
+| `routes`            | `(patterns: readonly string[]) => void`                    |
+| `busy`              | `<T>(work: Promise<T>) => Promise<T>`                      |
 | `state`             | `(name: string, value: unknown) => void`                   |
 | `renderCommit`      | `(commits: number) => void`                                |
 | `describe`          | `(input: CapabilitiesInput) => void`                       |
@@ -43,7 +67,11 @@ One instance, memoized on `globalThis` so hot module replacement does not create
 | `disconnect`        | `() => void`                                               |
 | `observeHotUpdates` | `(hot: unknown) => void` (called by the build integration) |
 
+`routes` declares the app's route patterns (`/runs/:id`, `*` for the rest), so each route change names its screen. `busy` declares work that only the app can see, such as a debounced save. A settle waits for it, and it returns `work`.
+
 Everything else on the class is private. `Reticle` itself is exported for typing.
+
+`trackShortTimers(maxMs?: number): () => void` is a separate export. It counts every short `setTimeout` (one second or less by default) as busy work, so a settle waits through a debounce. It returns the function that turns it off. It is off until you call it.
 
 ## `ReticleConnectOptions`
 
@@ -54,9 +82,11 @@ Every field is optional.
 | `url` | `string` | Bridge URL, when you are not on the default port |
 | `session` | `string` | Session id. Defaults to the auto id (`SESSION_AUTO` is re-exported here) |
 | `projectId` | `string` | Project identity stamped on the handshake |
-| `token` | `string` | Pairing token, required for a non-loopback page |
+| `token` | `string` | Pairing token. Required on every page, also on localhost, because the daemon makes one on its first start. The build plugins pass it for you |
 | `allowNonLocalhost` | `boolean` | Opt in to connecting from a non-localhost origin |
 | `allowInProduction` | `boolean` | Opt in to connecting from a production build. Desktop apps need this |
+| `env` | `'development' \| 'production'` | Where the page runs. `production` needs a session nonce as `token`. Absent: development. The [production loader](/production-mode) sets it |
+| `scope` | `'observe' \| 'act'` | What a drive may do. Required with `env: 'production'` |
 | `testIdAttribute` | `string` | The attribute the app marks controls with, when it is not `data-testid` |
 | `overlay` | `boolean` | The in-page overlay |
 | `captureNetworkBodies` | `boolean` | Record request and response bodies |
@@ -76,6 +106,8 @@ Every field is optional.
 | `endedFadeMs` | `number` | Fade after a session ends |
 | `idleEndMs` | `number` | Idle timeout before the session ends itself |
 | `redact` | `RedactionConfig` | Redaction policy, from core |
+
+Reticle itself sets two more fields, `injected` and `lease`. Do not set them in an app.
 
 ## Capabilities
 

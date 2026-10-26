@@ -55,6 +55,26 @@ describe('init and the prompt-capture hook', () => {
     expect(io.lines.filter((line) => line.includes(PROMPT_CAPTURE_NOTICE))).toHaveLength(1);
   });
 
+  /** The consent line named only a sign-in. A key in the environment shares too, and it never said how to keep prompts local. */
+  it('names every way a prompt is shared, and the switch that keeps it local', () => {
+    expect(PROMPT_CAPTURE_NOTICE).toContain('RETICLE_API_KEY');
+    expect(PROMPT_CAPTURE_NOTICE).toContain('"shareRequests": false');
+    expect(PROMPT_CAPTURE_NOTICE).toContain('RETICLE_PROMPT_CAPTURE=0');
+  });
+
+  /** The hooks also keep tool calls, the model and closing messages; the notice named only prompts. */
+  it('names all that the hooks keep, what a linked run sends, and the one switch for all of it', () => {
+    for (const kept of ['prompt', 'tool calls', 'model', 'closing message']) {
+      expect(PROMPT_CAPTURE_NOTICE).toContain(kept);
+    }
+    expect(PROMPT_CAPTURE_NOTICE).toContain('Tool calls stay on this machine');
+    expect(PROMPT_CAPTURE_NOTICE).toMatch(/sends the model/);
+    expect(PROMPT_CAPTURE_NOTICE).toMatch(
+      /prompts and the closing messages[^.]*"shareRequests": false/,
+    );
+    expect(PROMPT_CAPTURE_NOTICE).toContain('Stop all of it: "promptCapture": false');
+  });
+
   it('adds nothing on a second run', () => {
     const io = memoryIo(FILES);
     runInit(OPTS, io);

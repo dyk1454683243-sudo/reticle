@@ -12,7 +12,7 @@ icon: cube
 
 Without one shared definition the browser and the server drift. One side renames a field, the other keeps reading the old one, and the failure is silent: a verdict that quietly stops carrying its evidence. Core makes that a type error instead.
 
-The narrow dependency list is the point. `open-verification` itself depends on `zod` alone, so the graph stays acyclic: everything can depend on core, and nothing core does can drag a filesystem call into the browser bundle. This page said "depends on `zod` and nothing else" until v3 extracted the protocol and nobody updated the sentence.
+The narrow dependency list is the point. `open-verification` itself depends on `zod` alone, so the graph stays acyclic: everything can depend on core, and nothing core does can drag a filesystem call into the browser bundle.
 
 ## Do you install it?
 
@@ -32,6 +32,7 @@ npm i @reticlehq/core
 | `./hooks` | What Reticle says happened, for hook consumers |
 | `./hud` | Constants shared by the daemon and the HUD panel |
 | `./tour` | The onboarding tour |
+| `./activation` | The signed activation ticket: `signActivationTicket` for the service that makes tickets, `verifyActivationTicket` for the page loader. See [Production mode](/production-mode) |
 | `./desktop-contract` | A CommonJS shim, generated at build, for the strings the desktop adapters share |
 | `./source-constants` | A CommonJS shim, generated at build, for the source-stamp constants the build adapters share |
 | `./schema/*.json` | Generated JSON Schema for the wire types |

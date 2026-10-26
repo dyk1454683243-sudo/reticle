@@ -117,7 +117,8 @@ describe('TanStack Start', () => {
       tanstackStartConnectExists: true,
     });
     const connectWrites = again.filter(
-      (s) => s.write !== undefined && s.target !== 'src/reticle-dev.ts' && s.target !== 'vite.config.ts',
+      (s) =>
+        s.write !== undefined && s.target !== 'src/reticle-dev.ts' && s.target !== 'vite.config.ts',
     );
     expect(connectWrites).toEqual([]);
   });

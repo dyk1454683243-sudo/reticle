@@ -76,8 +76,9 @@ const CHANGE_DEBOUNCE_MS = 2_000;
 
 /**
  * What the sync itself writes into a root, plus `sessions/` (the per-event journal, appended on
- * every browser event and never sent). A change here must not wake the sync: the first would make
- * every cycle schedule the next, the second would turn an open tab into a cycle every two seconds.
+ * every browser event and never sent) and `episodes/` (every tool call, likewise never sent). A
+ * change here must not wake the sync: the first would make every cycle schedule the next, the others
+ * would turn an open tab or a working agent into a cycle every two seconds.
  * The atomic writes' `<file>.<pid>.tmp` siblings are matched by prefix.
  */
 const NOT_A_CHANGE = [ReticleDir.CLOUD_STATE_FILE, ReticleDir.ISSUES_FILE];
@@ -116,6 +117,7 @@ const isOwnWrite = (path: string): boolean => {
   const [head = ''] = path.split(/[\\/]/);
   return (
     head === ReticleDir.SESSIONS_SUBDIR ||
+    head === ReticleDir.EPISODES_SUBDIR ||
     NOT_A_CHANGE.some((file) => head === file || head.startsWith(`${file}.`))
   );
 };
@@ -156,13 +158,13 @@ const FIRST_CYCLE_DELAY_MS = 5_000;
 const NUDGE_DELAY_MS = 1_500;
 
 /**
- * How long a flush waits for a cycle already in flight before running its own.
+ * The whole time a flush may take: the wait for a cycle in flight, and its own cycle.
  *
- * Shutdown budget, not a sync budget: every call inside a cycle already carries its own timeout, so
- * this only bounds the WAIT. Generous enough for an ordinary cycle to finish, short enough that a
- * stalled one cannot hold a daemon open.
+ * Shutdown budget, not a sync budget. `reticle stop` sends SIGKILL 5 s after SIGTERM, and the daemon
+ * sends its stop event (up to 2 s) before it flushes. A flush past this budget let the kill come
+ * first. Runs that are not sent stay on disk, and the next daemon sends them.
  */
-const FLUSH_WAIT_MS = 3_000;
+const FLUSH_BUDGET_MS = 1_500;
 const FLUSH_POLL_MS = 25;
 
 interface SyncDaemonDeps {
@@ -329,7 +331,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     );
     for (const entry of unsynced) {
       const held = entry.runs + entry.flows;
-      if (entry.linked || announced.get(entry.root) === held) continue;
+      if (entry.linked || announced.get(entry.root) === held) {
+        continue;
+      }
       announced.set(entry.root, held);
       log('reticle_cloud_unsynced_root', {
         root: entry.root,
@@ -347,15 +351,19 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
    * refused stays refused until the sign-in or the key changes.
    */
   const admit = (root: string, cloud: ProjectCloud): ProjectCloud => {
-    if (deps.gate === undefined) return cloud;
+    if (deps.gate === undefined) {
+      return cloud;
+    }
     let gate = deps.gate(root, cloud);
     if (BackgroundSyncState.ON === gate.state && gate.credential !== undefined) {
       if (refusedUnder.get(root) === gate.credential) {
         gate = {
           state: BackgroundSyncState.REFUSED,
-          why: 'the platform refused this sign-in: run `reticle login` again',
+          why: 'the platform refused this sign-in: run `reticle connect` again',
         };
-      } else refusedUnder.delete(root);
+      } else {
+        refusedUnder.delete(root);
+      }
     }
     gates.set(root, gate);
     // A root starts as unlinked: `reticle_cloud_unsynced_root` already names one that never linked.
@@ -369,7 +377,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
   /** Stop sending for this root until its sign-in changes. */
   const refuse = (root: string): void => {
     const credential = gates.get(root)?.credential;
-    if (credential !== undefined) refusedUnder.set(root, credential);
+    if (credential !== undefined) {
+      refusedUnder.set(root, credential);
+    }
   };
 
   /** One root's bundle. The state, source and sink are already per-root; only the caller was not. */
@@ -378,9 +388,13 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     cloud: ProjectCloud,
     readMemory = true,
   ): Promise<SyncReport | undefined> => {
-    if (null === cloud.config) return undefined;
+    if (null === cloud.config) {
+      return undefined;
+    }
     const report = await sendRoot(root, cloud, readMemory);
-    if (report.error !== undefined && AUTH_REFUSED.test(report.error)) refuse(root);
+    if (report.error !== undefined && AUTH_REFUSED.test(report.error)) {
+      refuse(root);
+    }
     return report;
   };
 
@@ -389,12 +403,15 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     cloud: ProjectCloud,
     readMemory: boolean,
   ): Promise<SyncReport> => {
-    if (null === cloud.config) throw new Error('sendRoot needs a linked cloud');
+    if (null === cloud.config) {
+      throw new Error('sendRoot needs a linked cloud');
+    }
     const full = diskSource(root);
     // The team's decisions come down too: an author's record kept the words a maintainer set aside,
     // and re-sent them every cycle as a new disagreement.
-    if (cloud.policy.memory && readMemory)
+    if (cloud.policy.memory && readMemory) {
       await pullSettledWords(root, cloud.config, cloud.projectId).catch(() => 0);
+    }
     return runSyncCycle({
       config: cloud.config,
       ...(cloud.link === undefined ? {} : { link: cloud.link }),
@@ -428,7 +445,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     first?: { url: string; body: unknown },
   ): Promise<number> => {
     const body = await readMemoryPages(config.url, { projectId }, async (url) => {
-      if (first !== undefined && url === first.url) return first.body;
+      if (first !== undefined && url === first.url) {
+        return first.body;
+      }
       const res = await request(url, {
         method: 'GET',
         // The sync, not an agent: without this every cycle counted as an agent consulting memory.
@@ -437,11 +456,14 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
           [MemoryReadHeader.PURPOSE]: MemoryReadPurpose.SYNC,
         },
       });
-      if (root === deps.reticleRoot && !url.includes(`${MemoryScopeField.CURSOR}=`))
+      if (root === deps.reticleRoot && !url.includes(`${MemoryScopeField.CURSOR}=`)) {
         memoryTag = res.etag;
+      }
       return 200 === res.status ? (JSON.parse(res.text) as unknown) : undefined;
     });
-    if (body === undefined) return 0;
+    if (body === undefined) {
+      return 0;
+    }
     const entries = scopedMemoryEntries(body, projectId) ?? [];
     const settled = settledWordsIn(entries);
     await keptWordsInRequest(reticleDirPaths(root).request, settled);
@@ -455,12 +477,16 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
    * moves it; a fact deleted past the first page waits for the backstop.
    */
   const pollMemory = async (): Promise<void> => {
-    if (stopped || running || polling || now() - memoryReadAt < MEMORY_POLL_MS) return;
+    if (stopped || running || polling || now() - memoryReadAt < MEMORY_POLL_MS) {
+      return;
+    }
     polling = true;
     try {
       // The link the last cycle resolved: the poll costs no link read of its own.
       const cloud = lastCloud;
-      if (cloud === undefined || null === cloud.config || !cloud.policy.memory) return;
+      if (cloud === undefined || null === cloud.config || !cloud.policy.memory) {
+        return;
+      }
       const url = memoryReadUrl(cloud.config.url, {
         projectId: cloud.projectId,
         limit: MEMORY_PAGE_LIMIT,
@@ -474,8 +500,12 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
         },
       });
       // Answered either way, 304 included: the memory is known current as of now.
-      if (200 === res.status || 304 === res.status) memoryReadAt = now();
-      if (200 !== res.status) return;
+      if (200 === res.status || 304 === res.status) {
+        memoryReadAt = now();
+      }
+      if (200 !== res.status) {
+        return;
+      }
       memoryTag = res.etag;
       await pullSettledWords(deps.reticleRoot, cloud.config, cloud.projectId, {
         url,
@@ -498,7 +528,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
   const syncOtherRoots = async (): Promise<void> => {
     const roots = deps.otherRoots;
     const cloudFor = deps.cloudFor;
-    if (roots === undefined || cloudFor === undefined) return;
+    if (roots === undefined || cloudFor === undefined) {
+      return;
+    }
     let list: readonly string[] = [];
     try {
       list = await roots();
@@ -508,7 +540,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
       return;
     }
     for (const root of list) {
-      if (root === deps.reticleRoot) continue;
+      if (root === deps.reticleRoot) {
+        continue;
+      }
       rootsLinked.set(root, false);
       try {
         const cloud = admit(root, await cloudFor(root));
@@ -517,20 +551,30 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
         // for every other one: a daemon started with RETICLE_API_KEY pushed every project this
         // machine had seen into that one, a status and a pull per root on every cycle.
         // Never silently: `refreshUnsynced` names this root if it holds runs.
-        if (null === cloud.config || null === cloud.projectId) continue;
+        if (null === cloud.config || null === cloud.projectId) {
+          continue;
+        }
         rootsLinked.set(root, true);
-        if (cloud.policy.flows) rootsSendFlows.add(root);
+        if (cloud.policy.flows) {
+          rootsSendFlows.add(root);
+        }
         const report = await pushRoot(root, cloud);
-        if (report === undefined) continue;
+        if (report === undefined) {
+          continue;
+        }
         if (report.error !== undefined) {
           log('reticle_cloud_sync_failed', { root, error: report.error });
           continue;
         }
-        if (!report.ok) log('reticle_cloud_sync_failed', { root, error: describeSync(report) });
+        if (!report.ok) {
+          log('reticle_cloud_sync_failed', { root, error: describeSync(report) });
+        }
         const moved = movedAnything(report);
         // The root is NAMED here and not in the single-root log below, because with several repos
         // reporting, "synced 3 runs" without a directory is not an answer to "synced from where".
-        if (moved) log('reticle_cloud_synced', { root, summary: describeSync(report) });
+        if (moved) {
+          log('reticle_cloud_synced', { root, summary: describeSync(report) });
+        }
       } catch (error: unknown) {
         log('reticle_cloud_sync_failed', {
           root,
@@ -552,7 +596,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
    */
   let owed = false;
   const memoryDue = (forced: boolean): boolean => {
-    if (!forced && !intentMoved && now() - memoryReadAt < SETTLED_WORDS_MAX_AGE_MS) return false;
+    if (!forced && !intentMoved && now() - memoryReadAt < SETTLED_WORDS_MAX_AGE_MS) {
+      return false;
+    }
     intentMoved = false;
     memoryReadAt = now();
     return true;
@@ -562,7 +608,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
   const cycle = async (asked = false): Promise<SyncReport | undefined> => {
     // Overlap guard: a slow cycle must not have a second one started on top of it, or two bundles
     // race and the cursor written by the loser silently rewinds the winner's progress.
-    if (running) return undefined;
+    if (running) {
+      return undefined;
+    }
     running = true;
     // Owed work this cycle carries; a failed exchange leaves it owed, and a change meanwhile adds to it.
     const carried = owed;
@@ -581,7 +629,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
       lastCloud = cloud;
       const linked = null !== cloud.config;
       rootsLinked.set(own, linked);
-      if (linked && cloud.policy.flows) rootsSendFlows.add(own);
+      if (linked && cloud.policy.flows) {
+        rootsSendFlows.add(own);
+      }
       // Another project's memory is another project's decisions: a re-link reads it at once.
       const relinked = cloud.projectId !== wasProject;
       const linkChanged = linked !== wasLinked || (linked && relinked);
@@ -590,23 +640,29 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
       // With a gate, `admit` already said why once per change; this would say "run connect" to
       // somebody who only signed out or switched sync off.
       if (deps.gate === undefined && linkChanged) {
-        if (linked)
+        if (linked) {
           log('reticle_cloud_linked', {
             projectId: cloud.projectId,
             root: deps.reticleRoot,
           });
+        }
         // Names the ROOT, because the answer is almost always "the daemon is not where you think it
         // is" — and a message that omits the directory sends people to check their key instead.
-        else
+        else {
           log('reticle_cloud_unlinked', {
             root: deps.reticleRoot,
             fix: 'run `reticle connect` in this directory, or start the daemon in the linked one — nothing is being synced from here',
           });
+        }
       }
-      if (null === cloud.config) return undefined;
+      if (null === cloud.config) {
+        return undefined;
+      }
       const report = await pushRoot(deps.reticleRoot, cloud, memoryDue(asked || relinked));
       // `pushRoot` returns undefined only for an unlinked root, which the guard above has ruled out.
-      if (report === undefined) return undefined;
+      if (report === undefined) {
+        return undefined;
+      }
       // Said out loud on EVERY cycle, including the ones that moved nothing and the ones that
       // failed. The log below is deliberately quiet when idle, which is right for a log and wrong
       // for a hook: from outside, "nothing changed" and "sync has been broken since Tuesday" are
@@ -625,25 +681,31 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
         reportedError = failure;
         log('reticle_cloud_sync_failed', { error: failure });
       }
-      if (report.error === undefined && report.ok) lastPushAt = now();
+      if (report.error === undefined && report.ok) {
+        lastPushAt = now();
+      }
       if (report.error !== undefined) {
         owed ||= carried;
         failedCycle();
       } else {
-        if (failure === undefined) reportedError = undefined;
+        if (failure === undefined) {
+          reportedError = undefined;
+        }
         // Only when something actually moved. A per-minute "nothing to send" is noise that trains
         // people to stop reading the log.
         const moved = movedAnything(report);
-        if (moved && failure === undefined)
+        if (moved && failure === undefined) {
           log('reticle_cloud_synced', { summary: describeSync(report) });
+        }
         /*
          * A cycle that moved something means a drive is in progress, so the next one comes sooner;
          * one that moved nothing means the machine is idle, so it backs straight off. The rate
          * follows the work without needing to be told about sessions, and an idle laptop settles at
          * the same cost it had before this existed.
          */
-        if (failure !== undefined && !moved) failedCycle();
-        else {
+        if (failure !== undefined && !moved) {
+          failedCycle();
+        } else {
           failures = 0;
           nextDelay = moved ? activeIntervalMs : intervalMs;
         }
@@ -662,7 +724,9 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
     } finally {
       // Every OTHER linked root, after this one: the root that changed is the one somebody is waiting
       // on. Their failures are logged and never touch this root's push, whichever ran first.
-      if (othersDue) await syncOtherRoots().catch(() => undefined);
+      if (othersDue) {
+        await syncOtherRoots().catch(() => undefined);
+      }
       await refreshUnsynced().catch(() => undefined);
       running = false;
       startWatching();
@@ -688,10 +752,14 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
   let dirty = false;
 
   const schedule = (delay: number): void => {
-    if (stopped) return;
+    if (stopped) {
+      return;
+    }
     // Replace, never stack. `nudge` and the interval both schedule, and leaving the old timer armed
     // would let every nudge add a permanent extra cycle per minute for the life of the process.
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
     dueAt = now() + delay;
     timer = setTimeout(() => {
       dueAt = Number.POSITIVE_INFINITY;
@@ -706,28 +774,41 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
 
   /** Cycle within `delay`, but never LATER than a cycle already armed. */
   const soon = (delay: number): void => {
-    if (now() + delay < dueAt) schedule(delay);
+    if (now() + delay < dueAt) {
+      schedule(delay);
+    }
   };
 
   /** One follow-up for the changes a cycle may have missed, however many there were. */
   const afterCycle = (): void => {
-    if (!dirty) return;
+    if (!dirty) {
+      return;
+    }
     dirty = false;
     soon(CHANGE_DEBOUNCE_MS);
   };
 
   const onChange = (path: string): void => {
-    if (stopped || isOwnWrite(path)) return;
-    if (isIntent(path)) intentMoved = true;
+    if (stopped || isOwnWrite(path)) {
+      return;
+    }
+    if (isIntent(path)) {
+      intentMoved = true;
+    }
     owed = true;
-    if (running) dirty = true;
-    else soon(CHANGE_DEBOUNCE_MS);
+    if (running) {
+      dirty = true;
+    } else {
+      soon(CHANGE_DEBOUNCE_MS);
+    }
   };
 
   let unwatch: (() => void) | undefined;
   /** Watch the root once it exists; a root created mid-session is picked up after the next cycle. */
   const startWatching = (): void => {
-    if (stopped || unwatch !== undefined || deps.watch === undefined) return;
+    if (stopped || unwatch !== undefined || deps.watch === undefined) {
+      return;
+    }
     unwatch = deps.watch(onChange);
   };
   const stopWatching = (): void => {
@@ -769,22 +850,33 @@ export function startSyncDaemon(deps: SyncDaemonDeps): SyncDaemon {
       stopWatching();
       clearInterval(poll);
       stopped = true;
-      if (timer !== undefined) clearTimeout(timer);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
       timer = undefined;
     },
     flush: async (): Promise<void> => {
       stopWatching();
       clearInterval(poll);
       stopped = true;
-      if (timer !== undefined) clearTimeout(timer);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
       timer = undefined;
       // A cycle already running may have started BEFORE the write being flushed, so its report says
       // nothing about that artifact. Wait it out rather than skipping on the overlap guard.
-      const deadline = Date.now() + FLUSH_WAIT_MS;
-      while (running && Date.now() < deadline)
+      const deadline = now() + FLUSH_BUDGET_MS;
+      while (running && now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, FLUSH_POLL_MS));
+      }
       // Not `asked`: on the way out, the run goes first; the memory and the other repos only if due.
-      await cycle();
+      // Bounded by what is left of the budget: a cycle can wait on a network that does not answer.
+      let lateTimer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<void>((resolve) => {
+        lateTimer = setTimeout(resolve, Math.max(0, deadline - now()));
+      });
+      await Promise.race([cycle().then(() => undefined), late]);
+      clearTimeout(lateTimer);
     },
   };
 }
@@ -886,7 +978,9 @@ export function watchReticleRoot(
     });
   try {
     const watcher = watchFn(reticleRoot, (_event, name) => {
-      if (name !== null) onChange(name);
+      if (name !== null) {
+        onChange(name);
+      }
     });
     watcher.on('error', (error: unknown) => {
       unavailable(error);
@@ -895,7 +989,9 @@ export function watchReticleRoot(
     watcher.unref();
     return () => watcher.close();
   } catch (error: unknown) {
-    if ('ENOENT' === (error as { code?: unknown }).code) return undefined;
+    if ('ENOENT' === (error as { code?: unknown }).code) {
+      return undefined;
+    }
     unavailable(error);
     return () => undefined;
   }

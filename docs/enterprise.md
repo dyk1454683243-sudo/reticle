@@ -4,15 +4,15 @@ description: 'Premium access and activation, what is gated, the security and dat
 icon: building
 ---
 
-Enterprise features ship inside the open package and are unlocked by a signed license key you set as `RETICLE_LICENSE_KEY`. Activation is verified locally with Ed25519 and makes **no network call**, so nothing about your usage leaves your machine. Run `npx @reticlehq/server license` to see whether you are `active`, `eval`, `missing`, `expired` or `invalid`.
+Enterprise features ship inside the open package and are unlocked by a signed license key you set as `RETICLE_LICENSE_KEY`. Activation is verified locally with Ed25519 and makes **no network call**. Usage metrics are separate: they are on by default, and on a licensed build they carry your licence id. Turn them off with `RETICLE_TELEMETRY=0`. See [telemetry](/telemetry). Run `npx @reticlehq/server license` to see whether you are `active`, `eval`, `missing`, `expired` or `invalid`.
 
-> Premium access (how you get + activate it), what's gated, the security/data-handling posture, and the licensing model. Integration mechanics live in [`platform-integration.md`](./platform-integration.md).
+> For how to connect a platform to Reticle, see [Platform integration](/platform-integration).
 
 > **Already have a key and just need to switch it on?** [Activating a license key](./license-activation) is the step-by-step version: where to set it on each platform, the editor and CI cases, how to read every status, and what to do when it does not work.
 
 ## How premium access works (offline, no phone-home)
 
-Enterprise (`ee/`) features ship **inside the open package**; they're source-available (free for development, testing, and evaluation). A **license key activates them in production**. Activation is verified locally with Ed25519; nothing about your usage ever leaves your machine.
+Enterprise (`ee/`) features ship **inside the open package**; they're source-available (free for development, testing, and evaluation). A **license key activates them in production**. Activation is verified locally with Ed25519 and sends nothing. Usage metrics, which you can turn off, carry your licence id on a licensed build.
 
 **The flow, end to end:**
 
@@ -46,7 +46,7 @@ The licensing **mechanism** is open core (inspectable, FSL). Only the **features
 - **Today:** the activation gate + one gated feature (audit event recording, `audit-log`).
 - **Roadmap** (the reliably enterprise-only set): **SSO/SAML, SCIM, RBAC / team permissions, audit logs, multi-org management, verify-before-merge policy gates, and the hosted control-plane connectors.** These are the things a security/compliance org pays for; the core verification engine stays free forever.
 
-> What's premium vs free, and pricing, are business decisions for the owner; this doc describes the _mechanism_, not the price list.
+> For pricing, write to [hey@reticle.sh](mailto:hey@reticle.sh). This page describes the mechanism, not the price list.
 
 ## Security & data handling
 
@@ -54,9 +54,9 @@ The honest one-pager a security review needs. Reticle is built so the answer to 
 
 | Question | Answer |
 | --- | --- |
-| Does the SDK ship to production? | **No.** Dev/preview-only, tree-shaken from production builds. |
+| Does the SDK ship to production? | **Not by default.** The dev SDK is dev/preview-only and tree-shaken from production builds. If you opt in to [production mode](/production-mode), the `@reticlehq/browser/activate` loader ships. A visitor's page load reads one query parameter and loads no SDK, opens no socket and writes nothing. Only a signed, single-use ticket loads the SDK. |
 | Where does the server run? | **Localhost.** The bridge binds `127.0.0.1`; the verify endpoint is localhost-bound + token-guarded (constant-time), with request/body-size/timeout limits. |
-| Does anything phone home? | **No app data unless you opt in.** Linking a project to the dashboard (`reticle connect`) sends its runs there; see [what is recorded](what-is-recorded.md) and `reticle config` for what it sends. License checks are offline (Ed25519). The CLI sends anonymous, opt-out usage metrics only (random id + event names, no code, no PII; see [telemetry](telemetry.md)); disable fleet-wide with `RETICLE_TELEMETRY=0` or per-machine with `reticle telemetry disable`. Feedback your team explicitly sends us (`reticle feedback`) is the only free text that ever leaves; it is never collected passively, is redacted client-side, and is disabled fleet-wide with `RETICLE_FEEDBACK=0`. |
+| Does anything phone home? | **No app data unless you opt in.** Linking a project to the dashboard (`reticle connect`) sends its runs there; see [what is recorded](/what-is-recorded) and `reticle config` for what it sends. License checks are offline (Ed25519). The CLI sends opt-out usage metrics only (random id + event names, no code, no PII; on a licensed build they carry your licence id; see [telemetry](/telemetry)); disable fleet-wide with `RETICLE_TELEMETRY=0` or per-machine with `reticle telemetry disable`. Feedback your team explicitly sends us (`reticle feedback`) is the only free text that ever leaves; it is never collected passively, is redacted client-side, and is disabled fleet-wide with `RETICLE_FEEDBACK=0`. |
 | Where do artifacts live? | Your disk: `.reticle/runs/<id>.json` (atomic writes, bounded retention), `.reticle/flows/`, `.reticle/contract.json`. You own them. |
 | What can the server read? | The DOM/network/console/routing/state of the app under test, locally. |
 | Leak risk downstream? | The **`prod-preview` profile** redacts source `file:line`, raw bodies, and app-state values. |

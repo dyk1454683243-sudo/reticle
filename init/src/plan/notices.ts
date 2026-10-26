@@ -8,7 +8,10 @@
  *
  * They live together because that shared test is a real seam.
  */
-import { CONTAINERISED_TITLE, containerisedDevServerNote } from '@/diagnose/containerised-dev-server.js';
+import {
+  CONTAINERISED_TITLE,
+  containerisedDevServerNote,
+} from '@/diagnose/containerised-dev-server.js';
 import { mcpWindowsNote } from '@/register/mcp.js';
 import { unverifiedUiLibraryNote, WEBGL_CANVAS_LIMIT_NOTE } from '@/patch/snippets.js';
 import { FRAMEWORK_ADAPTERS, installGated } from './framework-adapter.js';

@@ -7,7 +7,7 @@ curl -fsSL https://raw.githubusercontent.com/reticlehq/reticle/main/install/inst
 irm https://raw.githubusercontent.com/reticlehq/reticle/main/install/install.ps1 | iex
 ```
 
-**The raw GitHub URL is the one the docs use today**, because `reticle.sh/install.sh` is not being served yet. When it is, the short form below becomes the published one and the raw URL keeps working:
+Both URLs work. `reticle.sh/install.sh` and `reticle.sh/install.ps1` redirect to the raw GitHub files above. The docs use the raw GitHub URL:
 
 ```bash
 curl -fsSL https://reticle.sh/install.sh | sh     # macOS, Linux, and Windows under Git Bash or WSL
@@ -16,7 +16,7 @@ irm https://reticle.sh/install.ps1 | iex          # stock Windows PowerShell
 
 Both forms fetch this same file. If you change the published URL, change it in the docs too: a `git grep raw.githubusercontent.com/reticlehq/reticle/main/install` finds every copy.
 
-Both are LAUNCHERS. Between them they do only the three things that cannot be Node, because Node may not exist yet:
+Both are LAUNCHERS. They do only what cannot wait for Node, because Node may not exist yet: check for a usable `node`, install the CLI (into a user folder when the global npm folder needs sudo or administrator rights), record a failure before Node, and print the agent prompt. Every other decision is `reticle setup install`:
 
 1. is there a usable `node`?
 2. `npm install -g @reticlehq/server`
@@ -26,11 +26,11 @@ Everything else — writing config, registering the MCP server with the agents o
 
 ## Why two files and not one
 
-The usual argument against a `.sh` and a `.ps1` is that they drift the first time somebody fixes a bug in one of them. That argument is sound, and it is why the logic is not here: there are three steps in each file and no decisions, so there is nearly nothing to drift.
+The usual argument against a `.sh` and a `.ps1` is that they drift the first time somebody fixes a bug in one of them. That argument is sound, and it is why the logic is not here: each file has only these few steps, and no product decisions, so there is nearly nothing to drift.
 
 The argument for the second file is that a stock Windows box has no `sh` at all. Without `install.ps1`, the platform with the most users is told to install Git Bash or WSL before it can run the command every doc shows. The prototype this replaced shipped a `.sh` and a `.cmd` for exactly that reason.
 
-**If either launcher ever needs a fourth step, it belongs in `reticle setup install`, not in here twice.** That is the line that keeps the pair honest, and the `launchers` job in [`ci.yml`](../.github/workflows/ci.yml) checks both parse, stay ASCII and install on every OS.
+**If either launcher ever needs a new step, it belongs in `reticle setup install`, not in here twice.** That is the line that keeps the pair honest, and the `launchers` job in [`ci.yml`](../.github/workflows/ci.yml) checks both parse, stay ASCII and install on every OS.
 
 ## Rules both files follow
 

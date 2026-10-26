@@ -21,6 +21,7 @@
  */
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -62,6 +63,46 @@ const CRASH =
   /(TypeError|ReferenceError|SyntaxError|ERR_[A-Z_]+|Cannot read propert|is not a function|is not defined)/;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One GET from the harness itself.
+ *
+ * The base-path scenario must see its own server answer before `init` runs. `fetch`
+ * is what `init` uses to judge the page, so a readiness check that also used it would
+ * hide a server that is up and blame the same probe the scenario exists to judge.
+ */
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+        }),
+      );
+    });
+    req.setTimeout(2000, () => {
+      req.destroy();
+      reject(new Error('timeout'));
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Where the base-path app listens.
+ *
+ * 59988 sits inside the ephemeral range (Linux starts at 32768; macOS and Windows at
+ * 49152). Another listener can hold it. `listen` then fails. The old process had no
+ * error handler and its output was discarded, so it exited without a word. `init`
+ * reported that as "nothing is serving /admin" for an app that never bound.
+ * Break-matrix on ubuntu (run 40151192300) failed that way. 15988 is below the range.
+ */
+const BASE_PATH_PORT = 15988;
+/** Set when that server never answered `/admin`. Empty once it has. */
+let basePathBootError = '';
 /** stdout of a shell one-liner, for the port checks a scenario makes about the machine. */
 const quietSync = (c) => spawnSync('sh', ['-c', c], { encoding: 'utf8' }).stdout ?? '';
 
@@ -445,18 +486,63 @@ const SCENARIOS = [
     why: 'an app mounted under /admin or /app: the root 404s while the app is perfectly healthy. Declaring the server dead because / is not 200 is a confident wrong cause',
     build: () => app({ 'package.json': pkg({ dev: 'true' }) }),
     setup: async (dir) => {
-      const srv = spawn(
-        process.execPath,
-        [
-          '-e',
-          "require('http').createServer((q,r)=>{if(q.url.startsWith('/admin')){r.end('<html>app</html>')}else{r.statusCode=404;r.end('not found')}}).listen(59988,'127.0.0.1')",
-        ],
-        { stdio: 'ignore' },
-      );
-      await sleep(1000);
+      basePathBootError = '';
+      const port = String(BASE_PATH_PORT);
+      // `q.url` is optional in the type. A request without one used to throw, and an
+      // uncaught throw killed the process the same way a failed bind did.
+      const script = [
+        "const s=require('http').createServer((q,r)=>{",
+        "const u=typeof q.url==='string'?q.url:'';",
+        "if(u.startsWith('/admin')){r.end('<html>app</html>');return;}",
+        "r.statusCode=404;r.end('not found');});",
+        "s.on('error',(e)=>{console.error(e&&e.code?e.code:String(e));process.exit(1);});",
+        `s.listen(${port},'127.0.0.1',()=>console.log('ready'));`,
+      ].join('');
+      const srv = spawn(process.execPath, ['-e', script], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let log = '';
+      srv.stdout.on('data', (chunk) => {
+        log += chunk;
+      });
+      srv.stderr.on('data', (chunk) => {
+        log += chunk;
+      });
+      const deadline = Date.now() + 5000;
+      while (!log.includes('ready') && null === srv.exitCode && Date.now() < deadline) {
+        await sleep(50);
+      }
+      const root = `http://127.0.0.1:${port}`;
+      if (!log.includes('ready')) {
+        basePathBootError = `base-path server did not bind ${root}${
+          0 < log.trim().length ? ` (${log.trim()})` : ''
+        }`;
+        srv.kill();
+        return srv;
+      }
+      try {
+        const admin = await httpGet(`${root}/admin`);
+        const top = await httpGet(`${root}/`);
+        if (
+          200 !== admin.status ||
+          !admin.body.includes('<html>app</html>') ||
+          404 !== top.status
+        ) {
+          basePathBootError =
+            `base-path server on ${root} answered /admin ${String(admin.status)} ` +
+            `and / ${String(top.status)}, not a healthy /admin app`;
+          srv.kill();
+        }
+      } catch (err) {
+        basePathBootError = `base-path server did not answer ${root}/admin (${String(err)})`;
+        srv.kill();
+      }
       return srv;
     },
-    run: (dir) => run(dir, ['--url', 'http://127.0.0.1:59988/admin']),
+    run: (dir) =>
+      0 < basePathBootError.length
+        ? { code: 1, out: basePathBootError }
+        : run(dir, ['--url', `http://127.0.0.1:${String(BASE_PATH_PORT)}/admin`]),
     // A 404 at / is not "nothing is serving"; the page under test answered.
     expect: 'SDK is NOT in the page',
   },
@@ -659,18 +745,27 @@ for (const s of selected) {
   const dir = s.build();
   let side;
   try {
-    if (s.setup !== undefined) side = await s.setup(dir);
+    if (s.setup !== undefined) {
+      side = await s.setup(dir);
+    }
     const { code, out } = await s.run(dir);
     if (UNPUBLISHED.test(out) && !out.includes(s.expect)) {
       rows.push({ name: s.name, ok: false, skipped: true, failures: [], out: '', why: s.why });
       continue;
     }
     const failures = [];
-    if (code === 0) failures.push('exited 0 — a broken machine was reported as a working install');
-    if (STACK.test(out) || CRASH.test(out))
+    if (code === 0) {
+      failures.push('exited 0 — a broken machine was reported as a working install');
+    }
+    if (STACK.test(out) || CRASH.test(out)) {
       failures.push('leaked a stack trace or a raw runtime error');
-    if (!out.includes(s.expect)) failures.push(`never said "${s.expect}"`);
-    if (out.includes('"ok": true')) failures.push('json says ok:true');
+    }
+    if (!out.includes(s.expect)) {
+      failures.push(`never said "${s.expect}"`);
+    }
+    if (out.includes('"ok": true')) {
+      failures.push('json says ok:true');
+    }
     rows.push({
       name: s.name,
       ok: failures.length === 0,
@@ -680,7 +775,9 @@ for (const s of selected) {
       knownWeakness: s.knownWeakness,
     });
   } finally {
-    if (side !== undefined) side.kill();
+    if (side !== undefined) {
+      side.kill();
+    }
     s.cleanup?.(dir);
     // The project daemon `init` starts outlives the scenario and keeps writing `.reticle/` into
     // this directory, so a single rmdir can race it: macOS CI died on ENOTEMPTY here and threw

@@ -12,7 +12,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { PROBE_HOSTS, anyFamilyServes, probeDevServers } from './dev-server-probe.js';
+import {
+  PROBE_HOSTS,
+  anyFamilyServes,
+  probeDevServerStates,
+  probeDevServers,
+} from './dev-server-probe.js';
 
 describe('the probe asks both address families', () => {
   it('covers the IPv4 and IPv6 loopbacks by address, not by a name the OS resolves for us', () => {
@@ -114,16 +119,53 @@ describe('the Host header the probe sends', () => {
       // `::` accepts both families on the stacks CI runs, so both probes arrive here.
       server.listen(0, () => {
         const addr = server.address();
-        if (null === addr || 'string' === typeof addr) reject(new Error('no port'));
-        else resolve(addr.port);
+        if (null === addr || 'string' === typeof addr) {
+          reject(new Error('no port'));
+        } else {
+          resolve(addr.port);
+        }
       });
     });
     try {
       expect(await anyFamilyServes(port)).toBe(true);
       expect(hosts.length).toBeGreaterThan(0);
-      for (const host of hosts) expect(host).toBe(`localhost:${String(port)}`);
+      for (const host of hosts) {
+        expect(host).toBe(`localhost:${String(port)}`);
+      }
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+});
+
+/*
+ * Vite binds `localhost`, which on macOS with a current Node is `[::1]` alone. The scan must see a
+ * listener on one loopback family only, whichever family that is.
+ */
+describe('a dev server on one loopback family only', () => {
+  for (const host of ['::1', '127.0.0.1']) {
+    it(`is found when it listens on ${host} alone`, async () => {
+      const { createServer } = await import('node:http');
+      const server = createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<html></html>');
+      });
+      const port = await new Promise<number | undefined>((resolve) => {
+        // No loopback for this family on this machine: there is nothing to find, so skip.
+        server.once('error', () => resolve(undefined));
+        server.listen(0, host, () => {
+          const addr = server.address();
+          resolve(null === addr || 'string' === typeof addr ? undefined : addr.port);
+        });
+      });
+      if (port === undefined) {
+        return;
+      }
+      try {
+        expect((await probeDevServerStates([port])).serving).toEqual([port]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+  }
 });

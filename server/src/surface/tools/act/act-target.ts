@@ -14,7 +14,7 @@ import {
   unissuedRefRefusal,
 } from '@reticlehq/core';
 import type { Session } from '@/portal/session/session.js';
-import { normalizeQueryArgs } from '@/surface/tools/read/query-shape.js';
+import { emptyQueryRefusal, normalizeQueryArgs } from '@/surface/tools/read/query-shape.js';
 import { resolveTargetRef, type TargetResolution } from './resolve-target.js';
 import { asRecord, asString, asNumber } from '@reticlehq/core';
 import { appearanceDecision } from '@reticlehq/engine/window/appearance-budget.js';
@@ -65,15 +65,29 @@ export async function resolveActTarget(
   if (ref !== undefined && ref.length > 0) {
     // Refused here, at the boundary, and never re-read as a `target`: guessing what an arbitrary
     // string meant is the silent re-resolution the stale-ref refusal exists to prevent.
-    if (!SESSION_REF.test(ref)) return { kind: 'error', message: unissuedRefRefusal(ref) };
+    if (!SESSION_REF.test(ref)) {
+      return { kind: 'error', message: unissuedRefRefusal(ref) };
+    }
     return { kind: 'ref', ref };
   }
   const target = args['target'];
   if (target === undefined) {
-    if (isGlobalPressCall(args)) return { kind: 'global', ref: '' };
+    if (isGlobalPressCall(args)) {
+      return { kind: 'global', ref: '' };
+    }
     return { kind: 'error', message: MISSING_ACT_TARGET };
   }
+  // A ref from a look, given as the target. It is the agent's own explicit ref, not a guess.
+  if ('string' === typeof target && SESSION_REF.test(target)) {
+    return { kind: 'ref', ref: target };
+  }
   const q = normalizeQueryArgs(asRecord(target));
+  // A target that names nothing (a CSS string, an empty object) is not sent to the page: there it
+  // read as "matched no element", which says the element is gone when nothing was searched.
+  const empty = emptyQueryRefusal(q);
+  if (empty !== undefined) {
+    return { kind: 'error', message: empty.message };
+  }
   /*
    * Look again while the step's own budget lasts, instead of once.
    *
@@ -101,7 +115,9 @@ export async function resolveActTarget(
       name: q['name'],
       scope: q['scope'],
     });
-    if (!out.ok) return { kind: 'error', message: out.error ?? 'target query failed' };
+    if (!out.ok) {
+      return { kind: 'error', message: out.error ?? 'target query failed' };
+    }
     const elements = asRecord(out.result)['elements'];
     const found = Array.isArray(elements) ? elements : [];
     const decision = appearanceDecision({
@@ -111,7 +127,9 @@ export async function resolveActTarget(
     });
     // One match, or an ambiguity: both are answered by the existing resolver, which already ranks
     // candidates inside its refusal so the next turn needs no snapshot.
-    if ('wait' !== decision.do) return resolveTargetRef(found, asRecord(out.result)['hint']);
+    if ('wait' !== decision.do) {
+      return resolveTargetRef(found, asRecord(out.result)['hint']);
+    }
     await new Promise((resolve) => setTimeout(resolve, decision.waitMs));
   }
 }

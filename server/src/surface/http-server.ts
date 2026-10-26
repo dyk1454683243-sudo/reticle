@@ -8,10 +8,14 @@ import {
   STATUS_PATH,
   STATUS_HOLD_QUERY,
   DRIVE_PATH,
+  SHUTDOWN_PATH,
+  PROXY_ID_PARAM,
 } from '@reticlehq/core';
 import { getSessionMetrics } from '@/telemetry/session-metrics.js';
 import {
   agentPeerSkew,
+  agentSessionOf,
+  AGENT_SESSION_PARAM,
   PEER_VERSION_PARAM,
   PEER_CONTRACT_PARAM,
 } from '@/command/version/peer-announce.js';
@@ -34,7 +38,9 @@ export interface SharedServer {
    * so each concurrent Claude Code client needs its own McpServer.
    * Must be called before listen.
    */
-  attachMcp(factory: (peerSkew?: string) => McpServer): void;
+  attachMcp(
+    factory: (peerSkew?: string, proxyId?: string, agentSession?: string) => McpServer,
+  ): void;
   /**
    * SDK version of each page connected when an agent attaches.
    * The daemon skew advice reads this so it does not tell the agent to restart over matching pages.
@@ -52,6 +58,12 @@ export interface SharedServer {
    * unattached, the route 404s, which is exactly what a newer CLI needs to hear from an older daemon.
    */
   attachDrive(provider: (url: string) => Promise<unknown>): void;
+  /**
+   * Register the handler behind POST /shutdown: the daemon's normal shutdown path. Only a loopback
+   * caller with the pairing token reaches it. Left unattached, the route 404s, and the caller falls
+   * back to a signal.
+   */
+  attachShutdown(handler: () => void): void;
   /**
    * Register a callback fired when the AGENT presence changes — true when the first MCP client (any
    * agent: Codex/OpenCode/Claude/Hermes) connects, false when the last one disconnects. Agent-
@@ -81,11 +93,12 @@ export interface SharedServer {
  * WS /reticle → browser SDK connections (via WebSocketServer)
  */
 export function createSharedServer(options: { token?: string } = {}): SharedServer {
-  type McpFactory = (peerSkew?: string) => McpServer;
+  type McpFactory = (peerSkew?: string, proxyId?: string, agentSession?: string) => McpServer;
   let mcpFactory: McpFactory | undefined;
   let pageSdkVersions: () => readonly (string | undefined)[] = () => [];
   let statusProvider: ((held: boolean) => unknown) | undefined;
   let driveProvider: ((url: string) => Promise<unknown>) | undefined;
+  let shutdownHandler: (() => void) | undefined;
   let agentPresence: ((connected: boolean) => void) | undefined;
   const transports = new Map<string, SSEServerTransport>();
   /**
@@ -115,8 +128,12 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
       isLoopbackPeer(req.socket.remoteAddress) &&
       isLoopbackHost(req.headers.host) &&
       isLocalWebOrigin(req.headers.origin, req.headers.referer);
-    if (localClient) return true;
-    if (token === undefined) return false;
+    if (localClient) {
+      return true;
+    }
+    if (token === undefined) {
+      return false;
+    }
     return tokensMatch(token, requestToken(req, url));
   };
 
@@ -161,6 +178,31 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
+      return;
+    }
+
+    if ('POST' === req.method && path === SHUTDOWN_PATH) {
+      // Stricter than the routes above: loopback alone is not enough to stop a daemon that serves
+      // every agent on this machine. The caller must also show the pairing token.
+      if (!isLoopbackPeer(req.socket.remoteAddress) || token === undefined) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('forbidden');
+        return;
+      }
+      if (!tokensMatch(token, requestToken(req, url))) {
+        res.writeHead(401, { 'Content-Type': 'text/plain' });
+        res.end('unauthorized');
+        return;
+      }
+      const handler = shutdownHandler;
+      if (handler === undefined) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('not found');
+        return;
+      }
+      // Answer first: the shutdown closes this server.
+      res.writeHead(202, { 'Content-Type': 'text/plain' });
+      res.end('stopping', () => handler());
       return;
     }
 
@@ -237,14 +279,23 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
       // one active transport per Server instance, so concurrent clients each need
       // their own instance backed by the same shared ToolDeps.
       // Handed to THIS connection's server only: the skew is about this agent, not the daemon (#1136).
-      const mcpServer = mcpFactory(peerSkew);
+      // The agent's own session id, so this connection's episode joins the agent hooks' records.
+      const mcpServer = mcpFactory(
+        peerSkew,
+        proxyIdOf(url.searchParams.get(PROXY_ID_PARAM)),
+        agentSessionOf(url.searchParams.get(AGENT_SESSION_PARAM)),
+      );
       const transport = new SSEServerTransport(MCP_MESSAGE_PATH, res);
       const sid = transport.sessionId;
       transports.set(sid, transport);
       sseStreams.set(sid, res);
       const peerVersion = url.searchParams.get(PEER_VERSION_PARAM);
-      if (null !== peerVersion && 0 < peerVersion.length) peerVersions.set(sid, peerVersion);
-      if (1 === transports.size) agentPresence?.(true); // first agent attached
+      if (null !== peerVersion && 0 < peerVersion.length) {
+        peerVersions.set(sid, peerVersion);
+      }
+      if (1 === transports.size) {
+        agentPresence?.(true);
+      } // first agent attached
       res.on('close', () => {
         transports.delete(sid);
         sseStreams.delete(sid);
@@ -259,7 +310,9 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
         } catch {
           /* a counter must never affect a disconnect path */
         }
-        if (0 === transports.size) agentPresence?.(false); // last agent detached → it's the human's turn
+        if (0 === transports.size) {
+          agentPresence?.(false);
+        } // last agent detached → it's the human's turn
       });
       mcpServer
         .connect(transport)
@@ -317,6 +370,10 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
     driveProvider = provider;
   }
 
+  function attachShutdown(handler: () => void): void {
+    shutdownHandler = handler;
+  }
+
   function attachAgentPresence(cb: (connected: boolean) => void): void {
     agentPresence = cb;
   }
@@ -362,7 +419,9 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
           'ERR_SERVER_NOT_RUNNING' !== (err as NodeJS.ErrnoException).code
         ) {
           reject(err);
-        } else resolve();
+        } else {
+          resolve();
+        }
       });
     });
   }
@@ -385,6 +444,7 @@ export function createSharedServer(options: { token?: string } = {}): SharedServ
     attachPageSdkVersions,
     attachStatus,
     attachDrive,
+    attachShutdown,
     attachAgentPresence,
     announceShutdown,
     close,
@@ -404,11 +464,19 @@ const MAX_DRIVE_BODY_BYTES = 8 * 1024;
  */
 const JSON_MEDIA_TYPE = 'application/json';
 
+/** A proxy id is a UUID. Anything else is not an id this daemon keys an agent by. */
+const PROXY_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function proxyIdOf(raw: string | null): string | undefined {
+  return null !== raw && PROXY_ID_SHAPE.test(raw) ? raw : undefined;
+}
+
 function isJsonRequest(req: http.IncomingMessage): boolean {
   // Read through the typed accessor rather than indexing the header bag: the index signature is
   // `any`-shaped, and narrowing after an unsafe read is narrowing a lie.
   const value = req.headersDistinct['content-type']?.[0];
-  if (undefined === value) return false;
+  if (undefined === value) {
+    return false;
+  }
   return JSON_MEDIA_TYPE === value.split(';')[0]?.trim().toLowerCase();
 }
 
@@ -459,7 +527,9 @@ function schemeOf(url: string): string | undefined {
 
 function driveSchemeRefusal(url: string): string | undefined {
   const scheme = schemeOf(url);
-  if (scheme !== undefined && DRIVEABLE_SCHEMES.includes(scheme)) return undefined;
+  if (scheme !== undefined && DRIVEABLE_SCHEMES.includes(scheme)) {
+    return undefined;
+  }
   // Names what it got, because the caller is a CLI printing this to somebody who typed the url and
   // needs to see which part of it was the problem.
   return (
@@ -475,7 +545,9 @@ function urlFromDriveRequest(body: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (typeof parsed !== 'object' || null === parsed) return undefined;
+  if (typeof parsed !== 'object' || null === parsed) {
+    return undefined;
+  }
   const url = (parsed as Record<string, unknown>)['url'];
   return 'string' === typeof url && url.length > 0 ? url : undefined;
 }

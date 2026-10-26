@@ -435,3 +435,58 @@ describe('a tab the daemon last saw, that reported no project', () => {
     expect(message).not.toMatch(/never seen one/);
   });
 });
+
+/*
+ * An unwired Vite app with its dev server already up on :5173. The agent's first
+ * `reticle_session {list}` answered "nothing is listening on the ports Reticle scans" and handed it
+ * `npm run dev`, so the agent started a second dev server on :5174. The scan had seen :5173. The
+ * caller's answer then kept only the ports this project announced or last used, and an unwired
+ * project has neither.
+ */
+describe('a dev server already running in an unwired caller project', () => {
+  function unwiredViteApp(): string {
+    const dir = projectDir(undefined);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }), 'utf8');
+    return dir;
+  }
+
+  it('is counted when the process on the port runs in that project', async () => {
+    const dir = unwiredViteApp();
+    const { manager, next } = stubSessions();
+    const stop = startNoSessionWatch({
+      sessions: manager,
+      port: 4400,
+      initialized: false,
+      directory: dir,
+      probe: () => Promise.resolve([5173]),
+      occupiedSiblings: () => Promise.resolve([]),
+      listenerDirectory: (port) => (5173 === port ? dir : undefined),
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const action = runWithClientDirectory(dir, () => next());
+    stop();
+    expect(action?.action).not.toBe(NoSessionAction.START_DEV_SERVER);
+    expect(action?.port).toBe(5173);
+  });
+
+  it('is named, not called absent, when the process runs in another folder', async () => {
+    const dir = unwiredViteApp();
+    const other = projectDir(undefined);
+    const { manager, next } = stubSessions();
+    const stop = startNoSessionWatch({
+      sessions: manager,
+      port: 4400,
+      initialized: false,
+      directory: dir,
+      probe: () => Promise.resolve([5173]),
+      occupiedSiblings: () => Promise.resolve([]),
+      listenerDirectory: () => other,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const action = runWithClientDirectory(dir, () => next());
+    stop();
+    expect(action?.action).toBe(NoSessionAction.START_DEV_SERVER);
+    expect(action?.reason).not.toMatch(/nothing is listening on the ports Reticle scans/);
+    expect(action?.reason).toMatch(/:5173/);
+  });
+});

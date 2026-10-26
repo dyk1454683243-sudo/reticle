@@ -32,6 +32,12 @@ export const MCP_SHUTDOWN_EVENT = 'reticle-shutdown';
 /** Local-only daemon introspection — `reticle status` GETs this for sessions + health at a glance. */
 export const STATUS_PATH = '/status';
 /**
+ * Local-only stop request — `reticle stop` and `reticle kill` POST here first, with the pairing token
+ * as a bearer token. It runs the daemon's normal shutdown path. A signal cannot do that on Windows,
+ * where it ends the process at once.
+ */
+export const SHUTDOWN_PATH = '/shutdown';
+/**
  * Query flag on STATUS_PATH: the caller (a running `reticle init`) is waiting on this daemon, so it
  * must not idle out yet. Without it the daemon init started exited mid-wait on a slow desktop build.
  */
@@ -135,7 +141,9 @@ export { ReticleEnv } from './reticle-env.js';
  */
 export function apiKeyFrom(env: Record<string, string | undefined>): string | undefined {
   const current = env[ReticleEnv.API_KEY];
-  if (current !== undefined && 0 < current.length) return current;
+  if (current !== undefined && 0 < current.length) {
+    return current;
+  }
   const legacy = env[ReticleEnv.CLOUD_KEY];
   return legacy !== undefined && 0 < legacy.length ? legacy : undefined;
 }
@@ -143,7 +151,9 @@ export function apiKeyFrom(env: Record<string, string | undefined>): string | un
 /** The platform URL, under either name — one function so no caller forgets the second. */
 export function cloudUrlFrom(env: Record<string, string | undefined>): string | undefined {
   const canonical = env[ReticleEnv.CLOUD_URL];
-  if (canonical !== undefined && 0 < canonical.length) return canonical;
+  if (canonical !== undefined && 0 < canonical.length) {
+    return canonical;
+  }
   const short = env[ReticleEnv.URL];
   return short !== undefined && 0 < short.length ? short : undefined;
 }
@@ -155,7 +165,9 @@ export const DEFAULT_PLATFORM_URL = 'https://app.reticle.sh';
 export function platformUrlFrom(env: Record<string, string | undefined>): string {
   // A loop, not /\/+$/: that pattern is polynomial on a value made of many slashes.
   let url = cloudUrlFrom(env) ?? DEFAULT_PLATFORM_URL;
-  while (url.endsWith('/')) url = url.slice(0, -1);
+  while (url.endsWith('/')) {
+    url = url.slice(0, -1);
+  }
   return url;
 }
 
@@ -274,6 +286,15 @@ export const INSPECT_IN_VIEWPORT_FIELD = 'inViewport';
 /** Schema version stamped onto compiled replay programs. */
 export const REPLAY_PROGRAM_VERSION = 1;
 
+/**
+ * The instruction files `reticle init` writes its Reticle section into, and the line that opens the
+ * section. `init` writes it and the server reads it, so both take it from here.
+ */
+export const AgentRules = {
+  FILES: ['CLAUDE.md', 'AGENTS.md'],
+  BEGIN: '<!-- reticle:begin (managed by `reticle init` — edit outside these markers) -->',
+} as const;
+
 /** The git-checked Reticle workspace directory + its layout. No free strings. */
 export const ReticleDir = {
   ROOT: '.reticle',
@@ -306,6 +327,8 @@ export const ReticleDir = {
   VISUAL_SUBDIR: 'visual',
   /** verification-run artifacts —.reticle/runs/<runId>.json (the OEM/CI-consumable verdict). */
   RUNS_SUBDIR: 'runs',
+  /** Dev-server logs, only when the state home cannot be written. Machine-local, like `runs/`. */
+  LOGS_SUBDIR: 'logs',
   /** fail-to-pass bug capsules —.reticle/capsules/<id>.json (a minimal failing flow + its evidence). */
   CAPSULES_SUBDIR: 'capsules',
   /**
@@ -320,6 +343,11 @@ export const ReticleDir = {
   PLANS_SUBDIR: 'plans',
   /** durable causal journal —.reticle/sessions/<id>/{events,actions}.jsonl (the substrate). */
   SESSIONS_SUBDIR: 'sessions',
+  /**
+   * Every tool call an agent made, in full, with what it did to the page —
+   * .reticle/episodes/<connection>.jsonl. Local evidence: never committed, never sent.
+   */
+  EPISODES_SUBDIR: 'episodes',
   /** append-only event ledger inside a session dir (one ReticleEvent per line). */
   JOURNAL_EVENTS_FILE: 'events.jsonl',
   /** append-only action ledger inside a session dir (one JournalAction per line). */
@@ -342,10 +370,12 @@ export const ReticleDir = {
   COVERAGE_FILE: 'coverage.json',
   /** Human review marks (HUD notes), pending and resolved — see server portal/session/human. */
   NOTES_FILE: 'notes.json',
-  /** The user's latest request, as the agent relayed it. Local: it is the user's own words. */
+  /** The user's latest request: the newest prompt the hook captured, or the one the agent relayed. Local. */
   REQUEST_FILE: 'request.json',
   /** Every prompt the agent hook captured, one JSON line each, oldest first. `request.json` holds the newest. */
   REQUESTS_LOG_FILE: 'requests.jsonl',
+  /** The prompt history moved aside when `requests.jsonl` fills. The same words, so the same rule. */
+  REQUESTS_LOG_ROTATED_FILE: 'requests.1.jsonl',
   APP_NOTES_FILE: 'app-notes.json', // confirmed targeting hints for the next session; never evidence
   PLATFORM_MOMENTS_FILE: 'platform-moments.json', // moments already said, so each is said once
   /**
@@ -412,6 +442,8 @@ export const VisualReason = {
   // quietly downgraded: a caller who asked for the whole scroll height and silently got the visible
   // part would bank a baseline that says nothing about the content below the fold.
   FULL_PAGE_UNSUPPORTED: 'full-page-unsupported',
+  // Desktop capture returns the whole window and cannot honor clip or ref.
+  CROP_UNSUPPORTED: 'crop-unsupported',
   // The shell answered, and the window had no composited frame to photograph yet. Distinct from
   // CAPTURE_FAILED on purpose: the capture ran and the window was empty, which is a timing fact
   // about the window rather than a failure of the capture path. Electron's `capturePage()` returns
@@ -474,8 +506,8 @@ export type ContractReadError = (typeof ContractReadError)[keyof typeof Contract
 
 // The event vocabulary lives beside this file and is re-exported here, so `EventType` stays one
 // import path for every consumer. See event-types.ts for why it moved.
-import { EventType } from './event-types.js';
-export { EventType };
+import { CanvasTrigger, EventType, MediaEvent } from './event-types.js';
+export { CanvasTrigger, EventType, MediaEvent };
 
 /** Bounds for the per-session ring buffer. */
 export const RING_BUFFER_DEFAULTS = {
@@ -505,6 +537,12 @@ export type PhenomenonType = (typeof PhenomenonType)[keyof typeof PhenomenonType
 
 /** Signal the React adapter fires once hydration commits (handlers attached). Shared browser↔server. */
 export const RETICLE_HYDRATION_SIGNAL = 'reticle:hydration-complete';
+
+/**
+ * Work the app declared it is doing (`reticle.busy(work)`): `{ delta: 1 }` when it starts and
+ * `{ delta: -1 }` when it ends. `settled` counts it as in flight, like a request. Shared browser↔server.
+ */
+export const RETICLE_BUSY_SIGNAL = 'reticle:busy';
 
 /**
  * The registered-store name the React adapter uses for render stats, read via reticle_state. It crosses
@@ -612,6 +650,9 @@ export const InputModeReason = {
    */
   NOT_CONFIGURED: 'real-input-not-configured-for-this-session',
   TARGET_NOT_FOCUSABLE: 'target-cannot-hold-focus', // lease press: the named element took no focus
+  /** A production drive presses only in the page. A native key goes to whatever holds focus, so
+   * the production policy could not judge the control it pressed. */
+  PRODUCTION_PRESS_IN_PAGE: 'production-drive-presses-in-page',
 } as const;
 export type InputModeReason = (typeof InputModeReason)[keyof typeof InputModeReason];
 

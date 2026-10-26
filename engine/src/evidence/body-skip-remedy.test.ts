@@ -51,6 +51,29 @@ describe('bodyCaptureRemedy follows the stamped reason', () => {
     expect(remedy).not.toContain('captureNetworkBodies');
   });
 
+  it('does not describe SSE as an unsupported stream', () => {
+    const remedy = bodyCaptureRemedy('3.8.0', ResponseBodyReason.STREAMING);
+    expect(remedy).toContain('ndjson');
+    expect(remedy).not.toContain('text/event-stream');
+    expect(remedy).not.toContain('never reads a stream');
+  });
+
+  it('tells an agent to wait for SSE capture instead of abandoning its body assertion', () => {
+    const result = evalNet(
+      [
+        call({
+          contentType: 'text/event-stream',
+          responseBodyReason: ResponseBodyReason.UNREADABLE,
+        }),
+      ],
+      { kind: 'net', bodyContains: 'hello' },
+    );
+    expect(result.pass).toBe(false);
+    expect(result.inconclusive).toContain('10 seconds');
+    expect(result.inconclusive).toContain('wait_for');
+    expect(result.inconclusive).not.toContain('captureNetworkBodies');
+  });
+
   it('no reason: the capture remedy, as before', () => {
     expect(bodyCaptureRemedy('3.7.0', undefined)).toContain('captureNetworkBodies');
   });

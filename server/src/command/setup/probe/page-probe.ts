@@ -15,7 +15,7 @@
 export interface PageProbe {
   /** The server answered at all. */
   readonly served: boolean;
-  /** The SDK appears in what it answered with. */
+  /** The SDK is referenced in what it answered with. A reference, not proof that the SDK loaded. */
   readonly sdkInPage: boolean;
   /**
    * The server ANSWERED and its certificate was refused. A self-signed dev cert is an ordinary
@@ -38,6 +38,12 @@ export const PageFinding = {
 } as const;
 export type PageFinding = (typeof PageFinding)[keyof typeof PageFinding];
 
+/** Where a reference that never loaded shows itself. Shared by both SDK_PRESENT sentences. */
+const FAILED_IMPORT =
+  'open the browser console and look for a failed import of @reticlehq/browser: a CDN 404 (for ' +
+  'example a version that is not published yet, or a private registry), a blocked script, or a ' +
+  'wrong path.';
+
 /** Pure, so the mapping is testable without a server or a browser. */
 export function readPage(probe: PageProbe): PageFinding {
   if (true === probe.tlsRefused) return PageFinding.TLS_REFUSED;
@@ -55,8 +61,13 @@ export function readPage(probe: PageProbe): PageFinding {
  * the one piece of positive evidence in the run.
  */
 export function describePage(finding: PageFinding, url: string, daemonSpoke = false): string {
+  // The probe reads the HTML text. It sees a REFERENCE to the SDK, not an SDK that loaded: a
+  // pinned CDN version that returns 404 leaves the reference in place and no SDK in the page.
   if (PageFinding.SDK_PRESENT === finding && daemonSpoke) {
-    return `The SDK IS in the page at ${url}; the daemon's account above says what became of it.`;
+    return (
+      `The page at ${url} references the SDK. That does not prove the SDK loaded: the daemon's ` +
+      `account above says if an SDK session dialled. If none did, ${FAILED_IMPORT}`
+    );
   }
   switch (finding) {
     case PageFinding.NOT_SERVED:
@@ -82,9 +93,10 @@ export function describePage(finding: PageFinding, url: string, daemonSpoke = fa
       // attempts, all failed": the SDK dialled three times and the socket failed, having returned
       // early from nothing. What is knowable here is that the SDK is present and no session arrived.
       return (
-        `The SDK IS in the page at ${url} and never dialled the bridge: a localhost guard, a ` +
+        `The page at ${url} references the SDK, and the SDK never dialled the bridge. First, ` +
+        `${FAILED_IMPORT} If the import loaded, the cause is a localhost guard, a ` +
         'production-only check, a bridge port that differs on the two sides, or `localhost` ' +
-        'resolving to IPv6 where the daemon is only on IPv4 — `npx @reticlehq/server doctor` names ' +
+        'resolving to IPv6 where the daemon is only on IPv4. `npx @reticlehq/server doctor` names ' +
         'that last one, and the page console names the first three.'
       );
   }

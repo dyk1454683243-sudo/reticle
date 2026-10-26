@@ -3,7 +3,7 @@
  * failing. Founder decision, 2026-10-09: a high advisory in a dev-only path was dropping unrelated
  * PRs from the merge queue, while a critical one still has to stop the merge.
  *
- * Two reviewed exceptions for unpatched development tools remain. An exception matches an
+ * One reviewed exception for an unpatched development tool remains. An exception matches an
  * advisory's exact version and sole dependency path; another path, a patched release, or a missing
  * advisory makes the exception stale, and a stale exception still fails the gate so the reviewed
  * list cannot rot.
@@ -25,26 +25,11 @@ const EXCEPTIONS = new Map([
       path: 'apps__e2e>verdaccio>@verdaccio/hooks>got>cacheable-request>http-cache-semantics',
     },
   ],
-  [
-    'GHSA-vfj7-8cjw-p6xm',
-    {
-      package: 'braces',
-      version: '3.0.3',
-      path: '.>tsc-alias>chokidar>braces',
-    },
-  ],
 ]);
 const SEVERITIES = new Set(['info', 'low', 'moderate', 'high', 'critical']);
 
-function reviewDevelopmentRoots(root, e2e) {
+function reviewDevelopmentRoots(e2e) {
   const failures = [];
-  if (
-    root.private !== true ||
-    root.devDependencies?.['tsc-alias'] !== '^1.9.5' ||
-    root.dependencies?.['tsc-alias'] !== undefined
-  ) {
-    failures.push('tsc-alias is no longer confined to the root development dependencies');
-  }
   if (
     e2e.private !== true ||
     e2e.devDependencies?.verdaccio !== '6.10.4' ||
@@ -117,12 +102,9 @@ function reviewAudit(report) {
 }
 
 function selfTest() {
-  const root = { private: true, devDependencies: { 'tsc-alias': '^1.9.5' } };
   const e2e = { private: true, devDependencies: { verdaccio: '6.10.4' } };
-  if (reviewDevelopmentRoots(root, e2e).length > 0) throw new Error('development roots rejected');
-  if (
-    reviewDevelopmentRoots({ ...root, dependencies: { 'tsc-alias': '^1.9.5' } }, e2e).length === 0
-  )
+  if (reviewDevelopmentRoots(e2e).length > 0) throw new Error('development roots rejected');
+  if (reviewDevelopmentRoots({ ...e2e, dependencies: { verdaccio: '6.10.4' } }).length === 0)
     throw new Error('production dependency passed');
   const report = {
     muted: [],
@@ -167,7 +149,7 @@ function selfTest() {
   if (reviewAudit(unknownSeverity).failures.length === 0)
     throw new Error('unknown severity passed');
   const newPath = clone();
-  newPath.advisories['GHSA-vfj7-8cjw-p6xm'].findings[0].paths.push('.>other>braces');
+  newPath.advisories['GHSA-ch52-4w7c-c8xp'].findings[0].paths.push('.>other>http-cache-semantics');
   if (reviewAudit(newPath).failures.length === 0) throw new Error('new path passed');
   const patched = clone();
   patched.advisories['GHSA-ch52-4w7c-c8xp'].patched_versions = '4.2.1';
@@ -203,7 +185,6 @@ if (process.argv.includes('--self-test')) {
   const { failures, warnings, accepted } = reviewAudit(report);
   failures.push(
     ...reviewDevelopmentRoots(
-      JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')),
       JSON.parse(readFileSync(new URL('../apps/e2e/package.json', import.meta.url), 'utf8')),
     ),
   );

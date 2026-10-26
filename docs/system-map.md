@@ -2,13 +2,14 @@
 title: System map
 description: 'How a tool call travels from a coding agent to your app and back, and which of those failures are silent.'
 icon: map
+noindex: true
 ---
 
-A tool call crosses five processes and four hops: coding agent → `reticle mcp` proxy (stdio) → daemon on `:4400` (HTTP POST out, SSE back) → browser SDK (WebSocket) → your app. Each hop has its own failure vocabulary and its own way of lying, and the ones marked **silent** below fail with no error reaching either the agent or you.
+A tool call crosses five processes and four hops: coding agent → `reticle mcp` proxy (stdio) → daemon on port `4400` by default (HTTP POST out, SSE back) → browser SDK (WebSocket) → your app. When another project's daemon holds that port, the proxy finds this project's daemon where it moved, or starts one on a free port. Each hop has its own failure vocabulary and its own way of lying, and the ones marked **silent** below fail with no error reaching either the agent or you.
 
 > How a tool call gets from a coding agent to your app and back, what each hop can do wrong, and which of those failures are **silent**. Written for anyone touching the transport, the daemon, the bridge, or a gate, and for contributors trying to work out where their change lives.
 >
-> Companion pages: [`harness-rules.md`](https://github.com/reticlehq/reticle/blob/main/apps/e2e/harness-rules.md) (what a gate must do about all this) and [`telemetry-contract.md`](./telemetry-contract.md) (the rules for anything that emits).
+> Companion pages: [`harness-rules.md`](https://github.com/reticlehq/reticle/blob/main/apps/e2e/harness-rules.md) (what a gate must do about all this) and [`contributing/telemetry/contract.md`](https://github.com/reticlehq/reticle/blob/main/contributing/telemetry/contract.md) (the rules for anything that emits).
 
 ## 1. Topology: 5 processes, 4 hops
 
@@ -37,13 +38,13 @@ Each hop has its own failure vocabulary, its own recovery, and its own way of ly
 | # | Step | Owner | Fails how |
 | --- | --- | --- | --- |
 | 1 | client spawns `reticle mcp` over stdio | client | the client's own startup timeout; **no host respawns a dead stdio server** |
-| 2 | proxy probes `:4400` (`probeDaemon`, plain TCP, 500ms) | proxy | a squatter that accepts and never serves looks alive |
+| 2 | proxy probes the bridge port, `4400` by default (`probeDaemon`, plain TCP, 500ms) | proxy | a squatter that accepts and never serves looks alive |
 | 3 | absent → spawn daemon detached, poll to `DAEMON_READY_TIMEOUT_MS` (10s) | proxy | slow CI; raise with `RETICLE_DAEMON_READY_TIMEOUT_MS` |
 | 4 | proxy opens SSE, waits for the `endpoint` frame → POST URL | proxy | an empty frame used to read as "connected"; now refused (`buildSessionUrl`) |
 | 5 | `initialize`, answered **locally** after `LOCAL_HANDSHAKE_MS` (12s) when the daemon cannot | proxy | any client with a startup budget under ~12s loses Reticle for the whole session |
 | 6 | daemon binds `:4400`, writes the pid file, starts bridge + idle watcher | daemon | `EADDRINUSE` → child exits 1, **parent already exited 0** |
 | 7 | app calls `reticle.connect()` → `ws://localhost:4400/reticle` | SDK | wrong port; missing pairing token; mixed content (Safari throws synchronously on `new WebSocket`) |
-| 8 | HELLO: `sessionId`, `projectId`, `protocolVersion`, capabilities | SDK → bridge | version mismatch → `1008` close → **the SDK stops retrying, permanently** |
+| 8 | HELLO: `sessionId`, `projectId`, `protocolVersion`, capabilities | SDK → bridge | version mismatch → `1008` close → **the SDK stops its timed retries**. It dials once more when the person returns to the tab |
 | 9 | bridge authenticates: pairing token / loopback tier / Origin allow-list | bridge | another project's daemon answers → `authFailureReason` names it |
 | 10 | Session registered, `everConnected = true` | daemon | n/a |
 | 11 | tool call → `runTool` → `session.send` → WS command → SDK → reply | all | any hop above, mid-flight |
@@ -56,13 +57,13 @@ Three different counts, all measured, and the difference between them matters:
 
 | Count | What it is |
 | --- | --- |
-| **77** | name constants in `ReticleTool` |
+| **78** | name constants in `ReticleTool` |
 | **30** | tools advertised under `RETICLE_ADVERTISE_ALL_TOOLS=1`, i.e. what `tool-surface-sweep-test` drives |
 | **10** | advertised by default; the rest are reached through `reticle_run { tool, args }` |
 
 The middle number is **family folding**: `reticle_baseline`, `reticle_session`, `reticle_record`, `reticle_flow` and `reticle_lease` each absorb their members behind an `action` parameter. So "every tool is callable" is asserted over the advertised surfaces, not over every named behaviour; a family member reachable only through an `action` value the sweep never passes is not covered by it. Worth closing when the per-tool budget lands (see [`gate-plan.md`](./gate-plan.md), Phase 4).
 
-These three were each wrong by the time somebody checked: the table read 68 / 48 / 19 against a measured 76 / 30 / 10 (77 constants since), and the middle one had a derived token cost hanging off it. `surface-sizes.test.ts` is the authority and fails when a surface changes size, so prefer reading it to trusting this row.
+These three were each wrong by the time somebody checked: the table read 68 / 48 / 19 against a measured 76 / 30 / 10 (78 constants since), and the middle one had a derived token cost hanging off it. `surface-sizes.test.ts` is the authority and fails when a surface changes size, so prefer reading it to trusting this row.
 
 | Token | Produced by | Consumed by | Invalidated by |
 | --- | --- | --- | --- |
@@ -116,7 +117,7 @@ Still fragile:
 
 | Failure | Silent | Note |
 | --- | --- | --- |
-| `serve` exits 0 on `EADDRINUSE` | **yes** | #115: the parent reports the spawn, the child reports the bind, nothing joins them |
+| `serve` exits 0 on `EADDRINUSE` | **fixed** | `port-presence.ts` tells `daemon`, `foreign` and `free` apart. `serve` refuses a port that a stranger holds, so it does not report a daemon that never bound. Guarded by `daemon-port-honesty-test` (#115) |
 | liveness is the pid file, never the port | **yes** | `isRunning` in `server/src/command/daemon/daemon.ts` |
 | idle shutdown fires mid-install | **yes** | 5min base / 30min attached; already scored three fixtures as install failures |
 | `isUselessDaemon` ends a daemon that served nothing | **yes** | lifetime facts, but a gate that installs for six minutes before its first call is that daemon |
@@ -128,7 +129,7 @@ Still fragile:
 
 | Failure | Silent | Note |
 | --- | --- | --- |
-| protocol mismatch → `1008` | no, but **terminal** | the SDK stops retrying by design; the app is dark until reload (#127) |
+| protocol mismatch → `1008` | no, but **terminal** | the SDK stops its timed retries by design. It dials once more when the person returns to the tab, and the app stays dark until then (#127) |
 | another project's daemon answers | no | `authFailureReason` is evidence-based, only claiming it when the daemon has demonstrably served another project |
 | `rejectAll('session disconnected')` | **fixed** | used to become `verified:"no" / assertion_failed`, i.e. Reticle blaming the app, by file and line, for its own lost connection. Now `verified:"unknown" / observation_lost` (#124) |
 | reaper ends a quiet session | no | revivable on the agent's next action |
@@ -148,13 +149,13 @@ Still fragile:
 | Layer | Class | Covered by | Gap |
 | --- | --- | --- | --- |
 | stdio | proxy survival | `mcp-survives-test` | external SIGKILL |
-| SSE/POST | unanswered calls | `mcp-stress-test` | fault injection is `kill -9`, not specified toxics |
-| daemon | lifecycle, idle, port | `daemon-lifecycle-test`, `status-honesty-test` | port arbitration, heartbeat |
+| SSE/POST | unanswered calls | `mcp-stress-test`, `transport-faults-test` (`fault-proxy.mjs`) | n/a |
+| daemon | lifecycle, idle, port | `daemon-lifecycle-test`, `status-honesty-test`, `daemon-port-honesty-test`, `daemon-heartbeat-test` | port arbitration |
 | bridge | auth, origins, version | `version-skew-test` | desktop origins under install |
 | SDK | queue, gaps, reconnect | browser unit tests | mid-session outage → verdict |
-| tools | surface, schema, refusals | `tool-surface-sweep-test`, `tool-fuzz-test` | latency/failure budget |
+| tools | surface, schema, refusals | `tool-surface-sweep-test`, `tool-fuzz-test`, the soak (`bench/TOOL-PROFILE.md`) | latency is recorded, not gated |
 | verdict | honesty | `release-smoke-test` | transport ≠ app (#124); false-green rate |
-| telemetry | silent absence | `telemetry-events-test`, `telemetry-contract.test.ts` | chokepoint coverage |
+| telemetry | silent absence | `telemetry-events-test`, `telemetry-contract.test.ts`, `dispatch-chokepoint.test.ts` | n/a |
 | install | pristine-surface wiring | `pnpm gate:install` (thirteen pristine scaffolds) | apps with many plugins: the `reticle-fixtures` repo |
 | client | per-agent MCP compatibility | nothing | the whole class |
 
@@ -168,4 +169,4 @@ Nine of ten layers have a gate. The one that does not, per-agent MCP compatibili
 - **zero orphan spans**; 23 orphans on one healthy run is the documented signature of a hung call
 - `settleTiming` always fires; it sits in a `finally` so a thrown call cannot leak a concurrency slot
 
-Today that output is produced and discarded.
+`trace-shape-test` (`apps/e2e/trace-shape.mjs`) checks the first two on every battery run. The `settleTiming` invariant has no check yet.

@@ -9,12 +9,15 @@
  *   nowhere else. An environment address is never used: a repository's `.env` that named the
  *   hosted service once sent another app's runs to the wrong workspace.
  * - Somebody is signed in to that address, and this machine holds a key for the link. `reticle
- *   logout` stops it on the next tick; `reticle login` starts it again.
+ *   logout` stops it on the next tick; `reticle login` starts it again. OR the link's key is
+ *   `RETICLE_API_KEY` from the environment, which is how CI runs: a committed `cloud.json`, a key
+ *   kept as a secret, and nobody to sign in. The address still comes from the link, and
+ *   `resolveProjectCloud` uses the environment's key only when it is for that address.
  *
  * `reticle sync` stays the explicit way to send now, and none of this applies to it.
  */
 import { dirname } from 'node:path';
-import { ReticleEnv } from '@reticlehq/core';
+import { ReticleEnv, apiKeyFrom } from '@reticlehq/core';
 import { projectSetting } from '@/memory/intent/record-request.js';
 import type { ProjectCloud } from './cloud-config.js';
 
@@ -73,11 +76,18 @@ export function backgroundSyncGate(input: {
       why: cloud.reason ?? 'no key for this link: run `reticle connect`',
     };
   }
+  if (cloud.config.apiKey === apiKeyFrom(env)) {
+    return {
+      state: BackgroundSyncState.ON,
+      why: `sends to ${cloud.config.url} with ${ReticleEnv.API_KEY}`,
+      credential: cloud.config.apiKey,
+    };
+  }
   const token = signedIn(cloud.config.url);
   if (token === undefined) {
     return {
       state: BackgroundSyncState.SIGNED_OUT,
-      why: `nobody is signed in to ${cloud.config.url}: run \`reticle login --url ${cloud.config.url}\``,
+      why: `nobody is signed in to ${cloud.config.url}: run \`reticle connect --url ${cloud.config.url}\``,
     };
   }
   return {

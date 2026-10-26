@@ -46,16 +46,16 @@ describe('the install step on a project that already has the packages', () => {
   });
 
   it('does nothing when the exact pinned version is already declared', () => {
-    expect(
-      installStatus(plan({ '@reticlehq/react': '3.2.0', '@reticlehq/next': '3.2.0' })),
-    ).toBe(StepStatus.ALREADY);
+    expect(installStatus(plan({ '@reticlehq/react': '3.2.0', '@reticlehq/next': '3.2.0' }))).toBe(
+      StepStatus.ALREADY,
+    );
   });
 
   /* The shape npm itself writes after `npm i -D pkg@3.2.0`, and the one the field hit. */
   it('does nothing when the caret range npm wrote covers the pin', () => {
-    expect(
-      installStatus(plan({ '@reticlehq/react': '^3.2.0', '@reticlehq/next': '~3.2.0' })),
-    ).toBe(StepStatus.ALREADY);
+    expect(installStatus(plan({ '@reticlehq/react': '^3.2.0', '@reticlehq/next': '~3.2.0' }))).toBe(
+      StepStatus.ALREADY,
+    );
   });
 
   it('installs again when only SOME of the packages are there', () => {

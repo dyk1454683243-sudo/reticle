@@ -557,12 +557,19 @@ jobs:
       # announced: installing the browser is idempotent and no product code has run yet.
       - id: browser
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: pnpm exec playwright install --with-deps chromium
       - if: steps.browser.outcome == 'failure'
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
           echo "::warning::installing Chromium failed or hung on the first attempt; retrying once"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The first attempt's apt-get can outlive its timed-out step and hold the dpkg lock.
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout > /dev/null
+          fi
           pnpm exec playwright install --with-deps chromium
       - run: pnpm test:smoke
       - name: Smoke evidence (including first failure)
@@ -602,6 +609,7 @@ jobs:
       windows: ${{ steps.filter.outputs.windows }}
       break: ${{ steps.filter.outputs.break }}
       launchers: ${{ steps.filter.outputs.launchers }}
+      toolsurface: ${{ steps.filter.outputs.toolsurface }}
       # WHICH scaffolds run on WHICH os, decided per event rather than hard-coded in the matrix.
       install_matrix: ${{ steps.install_matrix.outputs.value }}
     steps:
@@ -613,7 +621,7 @@ jobs:
           # Full qualification must also work when manually dispatched on a feature branch.
           case "${{ github.event_name }}" in
             schedule|workflow_dispatch)
-              for tier in install gateself desktop bench conformance rust e2e windows break launchers; do
+              for tier in install gateself desktop bench conformance rust e2e windows break launchers toolsurface; do
                 echo "$tier=true" >> "$GITHUB_OUTPUT"
               done
               exit 0
@@ -646,7 +654,8 @@ jobs:
             echo "e2e=true" >> "$GITHUB_OUTPUT"
             echo "windows=true" >> "$GITHUB_OUTPUT"
             echo "break=true" >> "$GITHUB_OUTPUT"
-            echo "launchers=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "launchers=true" >> "$GITHUB_OUTPUT"
+            echo "toolsurface=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           CHANGED="$(git diff --name-only "$BASE"...HEAD || true)"
           # Still fails OPEN. A base that resolves but produces nothing — a force-push, an empty
@@ -663,7 +672,8 @@ jobs:
             echo "e2e=true" >> "$GITHUB_OUTPUT"
             echo "windows=true" >> "$GITHUB_OUTPUT"
             echo "break=true" >> "$GITHUB_OUTPUT"
-            echo "launchers=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "launchers=true" >> "$GITHUB_OUTPUT"
+            echo "toolsurface=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "changed files:"; echo "$CHANGED" | sed 's/^/  /'
           # What each tier in scripts/ci/tier-patterns.json is for. The regexes moved there; the
@@ -734,6 +744,10 @@ jobs:
           #
           # `launchers`: install/ only. The job runs the two launchers, which install the PUBLISHED
           # CLI from npm, so a server or init change cannot change its answer.
+          #
+          # `toolsurface`: the MCP surface and the tool names. It runs the bench on a PULL REQUEST,
+          # before merge. A tool description or schema is charged to the agent on every turn, so a
+          # change to it moves the price, and review needs that number before the queue.
           #
           # Path routing lives in scripts/ci/changes.mjs. A changed path that matches no tier and
           # is not docs-only turns EVERY tier on: a new adapters/realm/* used to look routed and
@@ -895,9 +909,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # The gate scaffolds each framework at @latest, and a new release can raise its Node floor
+      # (astro 7.4.2 asks for >=22.23.4, while the runner cache held 22.23.3 on 2026-10-23). A user
+      # who installs today gets the newest Node 22, so the gate fetches it too.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          check-latest: true
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # npm 10, which Node 22 ships, crashes resolving a fresh Nuxt app since 2026-10-14
@@ -929,12 +947,19 @@ jobs:
       # Bounded with one announced retry: see the first Chromium install step in this file.
       - id: browser
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       - if: steps.browser.outcome == 'failure'
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
           echo "::warning::installing Chromium failed or hung on the first attempt; retrying once"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The first attempt's apt-get can outlive its timed-out step and hold the dpkg lock.
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout > /dev/null
+          fi
           pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       # Angular 21's dependency tree crashes npm 10's installer ("Cannot read properties of null
       # (reading 'edgesOut')") during the scaffold's own install, before Reticle is involved;
@@ -942,7 +967,7 @@ jobs:
       # npm 10, so this one cell uses npm 11.
       - name: npm 11 for the Angular scaffold
         if: matrix.scaffold == 'angular'
-        run: npm install -g npm@11
+        run: npm install -g npm@11.11.1
       # Both phases share one registry publish/prepack. Recheck the control when its machinery
       # changes, plus nightly/manual qualification; product changes always run the positive install.
       - name: Install gate (with negative control when needed)
@@ -1042,12 +1067,19 @@ jobs:
       # Bounded with one announced retry: see the first Chromium install step in this file.
       - id: browser
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       - if: steps.browser.outcome == 'failure'
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
           echo "::warning::installing Chromium failed or hung on the first attempt; retrying once"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The first attempt's apt-get can outlive its timed-out step and hold the dpkg lock.
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout > /dev/null
+          fi
           pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       # Headless Chromium + a multi-service boot flakes on shared runners (timing, resource
       # contention). Retry with a clean slate between attempts so a transient flake doesn't red CI;
@@ -1246,12 +1278,19 @@ jobs:
       # Bounded with one announced retry: see the first Chromium install step in this file.
       - id: browser
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       - if: steps.browser.outcome == 'failure'
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
           echo "::warning::installing Chromium failed or hung on the first attempt; retrying once"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The first attempt's apt-get can outlive its timed-out step and hold the dpkg lock.
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout > /dev/null
+          fi
           pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       - run: pnpm build
       # FIRST, as the install gate's self-test is. It makes the subject answer "yes" to every
@@ -1283,8 +1322,10 @@ jobs:
     # `bench:full` in the merge queue and on push to main (both path-routed), nightly and on demand.
     # It joined the queue after green nightlies on main from 2026-10-16 to 2026-10-19 (#1514), so a
     # token regression stops in the queue instead of turning main red.
+    # A pull request runs it only when it changes the tool surface (`toolsurface`): other pull
+    # requests do not pay for the bench, and the queue still grades them.
     if: >-
-      ((github.event_name == 'push' || github.event_name == 'merge_group') && needs.changes.outputs.bench == 'true') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      ((github.event_name == 'push' || github.event_name == 'merge_group') && needs.changes.outputs.bench == 'true') || (github.event_name == 'pull_request' && needs.changes.outputs.toolsurface == 'true') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1313,12 +1354,19 @@ jobs:
       # Bounded with one announced retry: see the first Chromium install step in this file.
       - id: browser
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       - if: steps.browser.outcome == 'failure'
-        timeout-minutes: 8
+        timeout-minutes: 15
         run: |
           echo "::warning::installing Chromium failed or hung on the first attempt; retrying once"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The first attempt's apt-get can outlive its timed-out step and hold the dpkg lock.
+            sudo pkill -9 -x apt-get || true
+            sudo pkill -9 -x dpkg || true
+            sudo dpkg --configure -a || true
+            echo 'DPkg::Lock::Timeout "300";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout > /dev/null
+          fi
           pnpm --filter @reticlehq/e2e --fail-if-no-match exec playwright install --with-deps chromium
       # The token proxy is a python package, and without it `countTokensProxy` returns null for every
       # payload — so every token dimension reads "this pass measured nothing" and the gate fails

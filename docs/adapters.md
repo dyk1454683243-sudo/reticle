@@ -1,6 +1,7 @@
 ---
 title: Writing an adapter
 description: What an adapter is, which kinds exist, and how to build one of your own.
+noindex: true
 ---
 
 Reticle watches an app from the inside. Most of what it does is the same everywhere: a click is a click, a failed request is a failed request. A few things are not, and those are what adapters are for.
@@ -13,7 +14,7 @@ There are three kinds, and they answer three different questions.
 | **build** | how does the SDK get into the page, and how does an element learn which file it came from? | `@reticlehq/vite-plugin` |
 | **realm** | how do we watch this kind of app's own traffic and take its picture? | `@reticlehq/electron` |
 
-You almost certainly want the first one. It is the only kind you can write today without changing Reticle itself, and it is the one that makes a failing check say `src/CartRow.tsx:42` instead of "something on the page".
+You almost certainly want the first one. It is one of two kinds you can write today without a change to Reticle itself (the other is a lint rule, see the end of this page). It is the kind that makes a failing check say `src/CartRow.tsx:42` instead of "something on the page".
 
 ## Writing a framework adapter
 

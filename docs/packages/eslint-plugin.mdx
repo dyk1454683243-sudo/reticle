@@ -4,7 +4,7 @@ description: Three lint rules that keep Reticle's signal layer and its comment h
 icon: shield-check
 ---
 
-`@reticlehq/eslint-plugin` is three ESLint rules that keep Reticle's signal layer and its comments self-enforcing. It is entirely optional: nothing in Reticle needs it, and you want it only once your app emits signals and you would like the compiler to notice when a new mutation forgets one.
+`@reticlehq/eslint-plugin` is three ESLint rules that keep Reticle's signal layer and its comments self-enforcing. It is entirely optional: nothing in Reticle needs it, and you want it only once your app emits signals and you want the linter to tell you when a new mutation has no signal.
 
 It exists because conventions rot. Someone adds a mutation, forgets the signal, and every verdict for that flow quietly drops a grade. Nothing breaks, the tests still pass, the evidence just gets weaker. A lint rule is the only way a convention survives contact with a deadline.
 

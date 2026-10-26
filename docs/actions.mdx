@@ -5,7 +5,7 @@ description: Every action reticle_act and reticle_act_and_wait can perform, with
 icon: hand-pointer
 ---
 
-Every action Reticle can perform takes the same shape: a `ref` from [`reticle_look { action: "page" }`](/tools/snapshot) or [`reticle_look { action: "find" }`](/tools/query), an `action` name, and an optional `args` object. The same actions are available on [`reticle_act`](/tools/act), which proves nothing, and on [`reticle_act_and_wait`](/tools/act-and-wait), which returns a verdict.
+Every action Reticle can perform takes the same shape: an element, an `action` name, and an optional `args` object. Give the element as a `ref` from [`reticle_look { action: "page" }`](/tools/snapshot) or [`reticle_look { action: "find" }`](/tools/query). Or give a `target` (`{ testid }`, `{ text }`, `{ role, name }` or `{ label }`) that Reticle finds in the same call. A press of Escape, Tab or a modifier shortcut goes to the document and needs neither. The same actions are available on [`reticle_act`](/tools/act), which proves nothing, and on [`reticle_act_and_wait`](/tools/act-and-wait), which returns a verdict.
 
 ```json
 { "ref": "e104", "action": "fill", "args": { "value": "reticle" } }
@@ -13,7 +13,7 @@ Every action Reticle can perform takes the same shape: a `ref` from [`reticle_lo
 
 | Action | Arguments | Notes |
 | --- | --- | --- |
-| `click` / `dblclick` | none | Dispatches a real click |
+| `click` / `dblclick` | none | Dispatches the full pointer and mouse sequence on the element. `args.native: true` forces a trusted native click |
 | `hover` | none | `mouseover` + `mouseenter`, so JS hover state triggers |
 | `focus` / `blur` | none |  |
 | `fill` | `{ value }` | Sets value via a React-safe native setter, then `input` and `change` |
@@ -53,7 +53,7 @@ Reticle blocks a control that looks destructive before acting on it:
 ```json
 {
   "error": "potentially destructive action blocked; retry with args.confirmDangerous=true",
-  "recovery": "Reticle blocked a potentially destructive control (delete, remove, revoke…) on purpose. If you mean it, retry the same action with args.confirmDangerous set to true. This is a deliberate refusal, not a defect: there is nothing to report."
+  "recovery": "Reticle blocked a control whose label reads as consequential (delete, remove, revoke, pay…) on purpose. If you mean it, send the SAME call again with `args: { confirmDangerous: true }`: it goes inside the `args` object, not beside it. This is a deliberate refusal, not a defect: there is nothing to report."
 }
 ```
 
@@ -96,13 +96,14 @@ Several actions in one round trip:
 
 <Warning>
   [`reticle_act { steps: [...] }`](/tools/act-sequence) returns `ok: true` when the steps were
-  **dispatched**, not when they worked. Batch the setup, then prove the outcome with
-  [`reticle_act_and_wait`](/tools/act-and-wait) on the final step.
+  **dispatched**, not when they worked. A step without `expect` proves nothing. Give the last step
+  an `expect` that names the end state, for example `"expect": { "kind": "signal", "name": "auth:granted" }`.
+  The sequence then returns a verdict and stops at the first `expect` that does not hold.
 </Warning>
 
 ## Real versus synthetic input
 
-`inputMode` in the response says which you got. `synthetic` means events dispatched programmatically. Correct for the overwhelming majority of apps. `real` means native CDP input, available under `reticle drive`, and needed by a few drag-and-drop and pointer-gesture libraries.
+`inputMode` in the response says which you got. `synthetic` means events dispatched programmatically. This is correct for most apps. `real` means native CDP input. You get it under `reticle drive`, and a few drag-and-drop and pointer-gesture libraries need it. On a leased tab (`reticle_lease`), a `press` uses the real keyboard: Tab moves focus, and a press with a `ref` focuses that element first, so Enter or Space presses it as a person would.
 
 <Warning>
   On a throttled tab, synthetic timers and pointer gestures can silently no-op. Pass

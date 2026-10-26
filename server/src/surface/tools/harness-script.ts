@@ -7,7 +7,7 @@
  * the HUD and redrawn as each part starts and ends.
  */
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   ReticleCommand,
   ReticleTool,
@@ -51,6 +51,7 @@ import {
   noteHarnessSpan,
 } from '@/judgement/runs/drive-run.js';
 import { openSessionIntents } from '@/memory/intent/open-intents.js';
+import { sharesRequests } from '@/memory/intent/record-request.js';
 import { sessionRoot, sessionTarget } from '@/memory/project/session-root.js';
 import { leasableAppUrl, sessionUrlOf } from '@/language/flows/flow-tools.js';
 import type { ToolDeps } from './tool-kit.js';
@@ -302,7 +303,7 @@ async function runPlan(
   let off = false;
   const poll = setInterval(() => {
     void refusedByPlatform(env, options).then((refusal) => {
-      if (MSG_HARNESS_DISABLED === refusal) off = true;
+      if (MSG_HARNESS_DISABLED === refusal?.text) off = true;
     });
   }, STOP_POLL_MS);
   poll.unref();
@@ -321,7 +322,7 @@ async function runPlan(
     // A replay-only plan started without the model's gates; a fallback is the model, so it asks now.
     fallbackRefused: async () => {
       const refusal = await refusedByPlatform(env, options);
-      return refusal === undefined ? undefined : firstLine(refusal);
+      return refusal === undefined ? undefined : firstLine(refusal.text);
     },
     ...(true === options.confirmDangerous ? { confirmDangerous: true } : {}),
     lease: async () => {
@@ -577,15 +578,20 @@ function scriptTexts(script: DriveScript): string[] {
 }
 
 /** What the project still owes, in its own words: the user's recent request, then open intents. */
-async function memoryGoals(deps: ToolDeps, sessionId?: string): Promise<string[]> {
+export async function memoryGoals(deps: ToolDeps, sessionId?: string): Promise<string[]> {
   const goals: string[] = [];
   try {
+    const root = sessionRoot(deps, sessionId);
     const parsed = PromptContextSchema.safeParse(
-      JSON.parse(await deps.fs.readFile(reticleDirPaths(sessionRoot(deps, sessionId)).request)),
+      JSON.parse(await deps.fs.readFile(reticleDirPaths(root).request)),
     );
     const at = parsed.success ? parsed.data.at : undefined;
     const request = parsed.success ? parsed.data.request : undefined;
-    if (request !== undefined && at !== undefined && deps.now() - at < REQUEST_FRESH_MS) {
+    // The request goes to the platform only when a run would carry it there too: captured shared,
+    // and the project has not said `"shareRequests": false` since.
+    const shared =
+      parsed.success && true === parsed.data.shared && sharesRequests(dirname(root), root);
+    if (shared && request !== undefined && at !== undefined && deps.now() - at < REQUEST_FRESH_MS) {
       goals.push(request);
     }
   } catch {

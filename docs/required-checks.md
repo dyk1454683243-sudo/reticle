@@ -1,6 +1,7 @@
 ---
 title: Which checks can block a merge
 description: A workflow that runs on every pull request does not necessarily stop anything being merged. Here is which ones do.
+noindex: true
 ---
 
 A workflow running on every pull request does not, on its own, stop anything being merged. GitHub only blocks a merge on checks the repository's **branch protection** setting names as required. That setting lives in the GitHub interface, not in this repository.
@@ -9,7 +10,7 @@ That gap is the difference between a gate and a decoration. A decoration still c
 
 ## How it works here
 
-`ci.yml` ends in a single job called **`gate`**. It waits on every other job in that file and passes only when each one either succeeded or was legitimately skipped. So one required check, `gate`, covers every other job in `ci.yml` except `fixtures-dispatch`, which notifies another repository and never runs on a pull request.
+`ci.yml` ends in a single job called **`gate`**. It waits on every other job in that file and passes only when each one either succeeded or was legitimately skipped. So one required check, `gate`, covers every other job in `ci.yml` except two. `fixtures-dispatch` notifies another repository and never runs on a pull request. `nightly-watch` runs only on the nightly and on a manual run on `main`. It waits on `gate`, so `gate` cannot wait on it.
 
 That trick only reaches so far. A job can only wait on jobs in **its own workflow file**, so the other workflows below cannot be folded into `gate`. Each has to be named in branch protection separately, or it blocks nothing.
 

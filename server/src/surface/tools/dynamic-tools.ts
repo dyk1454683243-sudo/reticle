@@ -35,10 +35,52 @@ interface ParamInfo {
   name: string;
   required: boolean;
   description: string;
+  /** Every value the schema accepts, when it is a closed set. */
+  values?: string[];
   /** The smallest value the schema accepts, when it bounds one. */
   min?: number;
   /** The largest value the schema accepts, when it bounds one. */
   max?: number;
+}
+
+/** One wrapper that does not change the value a schema accepts, peeled off; undefined at the core. */
+function unwrapOnce(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
+  if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable) {
+    return schema.unwrap() as z.ZodTypeAny;
+  }
+  if (schema instanceof z.ZodDefault) {
+    return schema.removeDefault() as z.ZodTypeAny;
+  }
+  if (schema instanceof z.ZodPipe) {
+    // A transform pipes the schema into the transform; a preprocess pipes the other way round.
+    return (schema.in instanceof z.ZodTransform ? schema.out : schema.in) as z.ZodTypeAny;
+  }
+  return undefined;
+}
+
+/** The schema without the wrappers that do not change the value it accepts. */
+function unwrappedOf(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let inner = schema;
+  for (let next = unwrapOnce(inner); next !== undefined; next = unwrapOnce(inner)) {
+    inner = next;
+  }
+  return inner;
+}
+
+/**
+ * A parameter's description, wherever in its wrappers it was written.
+ *
+ * zod 4 keeps a description on the schema `.describe()` was called on. `z.string().describe(d)
+ * .optional()` has none on the outside, although the JSON Schema an agent reads still carries `d`.
+ */
+export function descriptionOf(schema: z.ZodTypeAny): string | undefined {
+  for (let current: z.ZodTypeAny | undefined = schema; current !== undefined;) {
+    if (current.description !== undefined) {
+      return current.description;
+    }
+    current = unwrapOnce(current);
+  }
+  return undefined;
 }
 
 /**
@@ -49,30 +91,50 @@ interface ParamInfo {
  * prose, so the number shown is the number checked and cannot drift from it.
  */
 function boundsOf(schema: z.ZodTypeAny): { min?: number; max?: number } {
-  let inner: z.ZodTypeAny = schema;
-  for (;;) {
-    if (inner instanceof z.ZodOptional || inner instanceof z.ZodNullable) {
-      inner = inner.unwrap() as z.ZodTypeAny;
-    } else if (inner instanceof z.ZodDefault) {
-      inner = inner.removeDefault() as z.ZodTypeAny;
-    } else if (inner instanceof z.ZodEffects) {
-      inner = inner.innerType() as z.ZodTypeAny;
-    } else break;
+  const inner = unwrappedOf(schema);
+  if (!(inner instanceof z.ZodNumber)) {
+    return {};
   }
-  if (!(inner instanceof z.ZodNumber)) return {};
-  const { minValue: min, maxValue: max } = inner;
+  // `.int()` reports the safe-integer range as its bounds. That range bounds nothing an agent sends.
+  const min =
+    Number.MIN_SAFE_INTEGER < (inner.minValue ?? Number.MIN_SAFE_INTEGER) ? inner.minValue : null;
+  const max =
+    Number.MAX_SAFE_INTEGER > (inner.maxValue ?? Number.MAX_SAFE_INTEGER) ? inner.maxValue : null;
   return { ...(null === min ? {} : { min }), ...(null === max ? {} : { max }) };
 }
 
+/**
+ * An enum parameter's accepted values, read off the enum that enforces them (#1775).
+ *
+ * `claim` on reticle_session takes `pass | fail | partial`, but its description said only what the
+ * value means, so an agent sent a sentence and the call was refused. Read here rather than written
+ * into prose, so the values shown are the values checked and cannot drift from them.
+ */
+function valuesOf(schema: z.ZodTypeAny): string[] | undefined {
+  const inner = unwrappedOf(schema);
+  if (!(inner instanceof z.ZodEnum)) {
+    return undefined;
+  }
+  const options: unknown = inner.options;
+  if (!Array.isArray(options)) {
+    return undefined;
+  }
+  return options.filter((option: unknown): option is string => 'string' === typeof option);
+}
+
 /** Compact param list from a tool's zod shape — name/required/description (the description already
- * carries the type and any enum hints, so no JSON-Schema machinery is needed), plus numeric bounds. */
-function paramInfo(shape: z.ZodRawShape): ParamInfo[] {
-  return Object.entries(shape).map(([name, schema]) => ({
-    name,
-    required: !schema.isOptional(),
-    description: schema.description ?? '',
-    ...boundsOf(schema),
-  }));
+ * carries the type, so no JSON-Schema machinery is needed), plus closed values and numeric bounds. */
+function paramInfo(shape: Record<string, z.ZodType>): ParamInfo[] {
+  return Object.entries(shape).map(([name, schema]) => {
+    const values = valuesOf(schema);
+    return {
+      name,
+      required: !schema.isOptional(),
+      description: descriptionOf(schema) ?? '',
+      ...(values === undefined ? {} : { values }),
+      ...boundsOf(schema),
+    };
+  });
 }
 
 /**
@@ -185,6 +247,7 @@ export function buildDynamicTools(
       .array(z.string())
       .optional()
       .describe('Tool names to load full params for. Omit to list all tools with summaries.'),
+    name: z.string().optional().describe('One tool name: the same as names:[name].'),
   };
   const reticleTools: ToolDef = {
     name: ReticleTool.TOOLS,
@@ -192,18 +255,18 @@ export function buildDynamicTools(
     // surface it is the first thing an agent reads about this tool and it names a tool that is not
     // there, so it is said only where it can be acted on.
     description:
-      'Discover Reticle tools on demand. Call with no arguments to list every tool (name + one-line summary); call with names:["reticle_network", …] to load full descriptions and parameters for specific tools.' +
+      'Discover Reticle tools on demand. Call with no arguments to list every tool (name + one-line summary); call with names:["reticle_screenshot", …] to load full descriptions and parameters for specific tools.' +
       (callable === undefined
         ? ' Then invoke them with reticle_run.'
         : ' Every tool it lists is callable directly by name.') +
       ' This avoids paying for every tool definition on every turn.' +
-      // The flow workflow is taught ONLY where it can be followed. Three of its four calls —
+      // The flow workflow is taught ONLY where it can be followed. Most of its calls —
       // reticle_record, reticle_flow_save, reticle_verify { action: "heal" } — are in the merged table but are not
       // advertised, and a closed surface has no dispatch hatch to reach them, so naming them here
-      // hands the reader a four-step recipe of which one step works. Replaying flows that already
+      // hands the reader a recipe of which one step works. Replaying flows that already
       // exist is reachable either way, via reticle_verify, so that half is still offered.
       (callable === undefined
-        ? ' To make a verification REUSABLE (record once, replay free forever), the flow workflow lives here: reticle_record{action:"start"} → act → reticle_flow_save → reticle_verify{action:"flows"} (and reticle_verify { action: "heal" } on drift). Load those names when you want to save or re-run a flow.'
+        ? ' To make a verification REUSABLE (record once, replay free forever), the flow workflow lives here: reticle_record{action:"start"} → act → reticle_record{action:"stop"} → reticle_flow_save → reticle_verify{action:"flows"} (and reticle_verify { action: "heal" } on drift). Load those names when you want to save or re-run a flow.'
         : ' Flows that already exist replay with reticle_verify { action: "flows" }. RECORDING a new one is not reachable from this surface; start the daemon with RETICLE_ADVERTISE_ALL_TOOLS=1 if you need to build one.'),
     inputSchema: toolsShape,
     handler: (_deps: ToolDeps, args: Record<string, unknown>) => {
@@ -219,9 +282,12 @@ export function buildDynamicTools(
           hint: TOOLS_ARG_HINT,
         });
       }
-      const names = Array.isArray(args['names'])
+      const listed = Array.isArray(args['names'])
         ? (args['names'] as unknown[]).filter((n): n is string => 'string' === typeof n)
         : undefined;
+      const one = 'string' === typeof args['name'] ? [args['name']] : [];
+      const names =
+        listed === undefined && 0 === one.length ? undefined : [...(listed ?? []), ...one];
       if (names === undefined || 0 === names.length) {
         // The COUNT is stated, not just implied by the array length. An agent that can see 18 tools
         // has no way to know whether that is all of them; being told the registry holds more is what
@@ -262,8 +328,9 @@ export function buildDynamicTools(
       return Promise.resolve({
         tools: names.map((n) => {
           const t = byName.get(n);
-          if (t !== undefined)
+          if (t !== undefined) {
             return { name: n, description: t.description, params: paramInfo(t.inputSchema) };
+          }
           // `reticle_run` has answered a merged name with its replacement for a while; the tool
           // asked to DISCOVER tools still said "unknown tool", which is the wrong answer in the one
           // place an agent goes to resolve a name it is unsure of. Same redirect, same derivation.
@@ -275,8 +342,8 @@ export function buildDynamicTools(
   };
 
   const runShape = {
-    tool: z.string().describe('Tool name to invoke, e.g. reticle_network.'),
-    args: z.record(z.unknown()).optional().describe('Arguments object for that tool.'),
+    tool: z.string().describe('Tool name to invoke, e.g. reticle_clock.'),
+    args: z.record(z.string(), z.unknown()).optional().describe('Arguments object for that tool.'),
     // Accepted AND FORWARDED, not merely tolerated. reticle_run is the only way to reach an
     // unadvertised tool, so on a machine running several projects it has to be aimable — and
     // `sessionId` is the shape an agent already uses on every other tool. Reported from the field
@@ -327,7 +394,9 @@ export function buildDynamicTools(
         // ...and for 22 of those names the capability DOES exist, it just moved when tools merged.
         // Answering "unknown tool" there is simply wrong; see merged-name-redirect.
         const absent = explainAbsent(name);
-        if ('unknown tool' !== absent.error) return absent;
+        if ('unknown tool' !== absent.error) {
+          return absent;
+        }
         return { error: `unknown tool '${name}'`, available: reachable.map((t) => t.name) };
       }
       // The outer aim, forwarded ONLY to a tool that declares a session — injecting it into one that

@@ -17,6 +17,7 @@ import { FlowStore } from './language/flows/flows.js';
 import type { FlowFile } from '@reticlehq/core';
 import type { FileSystemPort } from './memory/project/fs/fs-port.js';
 import { makeJournalAttach } from './memory/journal/attach-journal.js';
+import { setEpisodeLogEnabled } from './memory/journal/episode-log.js';
 import { endLiveSessions, makeSessionEnd, recordDriveRun } from './memory/journal/session-end.js';
 import { attachDriveRunFlush } from './memory/journal/drive-run-flush.js';
 import type { TapeStep } from './memory/journal/drive-flow.js';
@@ -61,6 +62,8 @@ export function attachJournal(
   },
 ): () => Promise<void> {
   const journalAttach = makeJournalAttach(deps);
+  // The episode log is part of the journal: the same switch turns both off.
+  setEpisodeLogEnabled(deps.enabled);
   const ambientStore = new AmbientStore(deps.fs, deps.reticleRoot);
   // Built once, not per session: the resolver walks config discovery and the user-level registry,
   // and neither changes between two tabs connecting a second apart.
@@ -85,7 +88,9 @@ export function attachJournal(
     // repository nor the root we were about to write into: it created `.reticle/` — holding nothing
     // but the ignore file — wherever the daemon was launched, coming back every boot after the user
     // deleted it, while the journals this ignore protects landed in another tree, uncovered.
-    if (deps.enabled) void ensureWorkspaceGitignore(deps.fs, session.artifactRoot);
+    if (deps.enabled) {
+      void ensureWorkspaceGitignore(deps.fs, session.artifactRoot);
+    }
     journalAttach(session);
   };
   bridge.attachSessionCreate((session) => {

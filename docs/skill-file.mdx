@@ -11,7 +11,7 @@ icon: graduation-cap
 https://docs.reticle.sh/skill.md
 ```
 
-Paste that URL into the agent and say "read this and set up Reticle". It is the canonical file with [Agent Skill](https://agentskills.io) frontmatter (`name`, `description`) added. The repository copy, `https://raw.githubusercontent.com/reticlehq/reticle/main/SKILL.md`, has the same body without the frontmatter, and a test fails if the two ever differ. To install the rules as a skill instead, `npx skills add reticlehq/reticle` installs `reticle` (the Claude Code plugin's shorter restructure of this file, held to the same rules by that test) and the task skills beside it. The same file ships inside the package, so an agent with no network can read it from disk:
+Paste that URL into the agent and say "read this and set up Reticle". It is the canonical file with [Agent Skill](https://agentskills.io) frontmatter (`name`, `description`) added. The repository copy, `https://raw.githubusercontent.com/reticlehq/reticle/main/SKILL.md`, has the same body without the frontmatter, and a test fails if the two ever differ. To install it as a skill instead, run `npx skills add reticlehq/reticle --skill reticle`. It installs one file with the same body. Without `--skill`, the command lists the task skills too. The same file ships inside the package, so an agent with no network can read it from disk:
 
 ```
 node_modules/@reticlehq/server/SKILL.md
@@ -24,8 +24,9 @@ The `docs/` folder beside it is a copy of this site.
 
 It is the critical path and nothing else. Read [SKILL.md](https://github.com/reticlehq/reticle/blob/main/SKILL.md) itself to get the rules exactly right; in short:
 
-- **First move:** if the `reticle_*` tools are visible, call `reticle_session { action: "list" }`. If they are not, hand the user the installer line and stop.
-- **Setup is `init`, then the first run.** `init` wires the app and waits for a session. It never drives. A dev server that was already running must be restarted once.
+- **Three steps, in order:** install once per machine, wire the app once per project, then prove one flow.
+- **Install:** if the `reticle_*` tools are not visible, hand the user the installer line and stop.
+- **Wire only with consent.** `reticle_session { action: "list" }` changes no file. On an unwired project it asks before `init`. When an app is running, it also names the zero-install lease, which checks the app with nothing installed. `init` changes files, so run it only when the user agrees. A request to set up Reticle is that agreement. A dev server that was already running must be restarted once.
 - **Done means a verdict.** A session listed means the SDK reached the page. Setup is finished when the first run returns a verdict.
 - **Only `verified: "yes"` is a pass.** `unknown` means Reticle could not tell. Never weaken a check to make it pass.
 - **Replay before you drive.** `reticle_verify { action: "change" }` or `{ action: "flows" }` re-verifies saved journeys in one call.

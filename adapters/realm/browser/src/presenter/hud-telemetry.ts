@@ -71,8 +71,8 @@ function pageOf(root: Element): { view: HudView; panel: HudPanel } {
 }
 
 /**
- * The sign-in and link asks the HUD can show, each with where it has to be to be seen: the rail sits
- * under every open page, the Harness page's controls only count on that page, and the header's
+ * The sign-in and link asks the HUD can show, each with where it has to be to be seen: the sign-in
+ * ask sits in the Agent Log, the Harness page's controls only count on that page, and the header's
  * "Save runs for your team" whenever the HUD is more than a bubble.
  */
 const PROMPTS: readonly {
@@ -83,7 +83,7 @@ const PROMPTS: readonly {
   {
     surface: HudPromptSurface.RAIL,
     selector: `[${RAIL_SIGNIN_ATTR}]`,
-    shown: (at) => HudView.EXPANDED === at.view,
+    shown: (at) => HudPanel.CHAT === at.panel,
   },
   {
     surface: HudPromptSurface.HARNESS,
@@ -146,7 +146,7 @@ export function installHudTelemetry(
     lastSlide = slide;
     send({ slide });
   };
-  // Each ask once per page load; the daemon keeps its own once-per-tab on top.
+  // Each ask once per page load; the daemon keeps its own once-per-daemon on top.
   const prompted = new Set<HudPromptSurface>();
   const onPrompt = (): void => {
     const at = viewOf(root);

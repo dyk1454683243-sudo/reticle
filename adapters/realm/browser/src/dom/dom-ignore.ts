@@ -1,4 +1,6 @@
 import { RETICLE_OVERLAY_SELECTOR } from '@reticlehq/core';
+import { capturedRootOf } from './shadow-registry.js';
+import { isVisible } from './visibility.js';
 
 /**
  * Selectors for Reticle's own presenter overlay (cursor, HUD, glow) + the annotator's
@@ -88,7 +90,9 @@ const HUD_DOCK = '[data-reticle-dock]';
  * change. The cursor and glow stay out even then: they move on every action and prove nothing.
  */
 export function isUnobserved(el: Element): boolean {
-  if (!isReticleOverlay(el)) return false;
+  if (!isReticleOverlay(el)) {
+    return false;
+  }
   return !exposed() || null === el.closest(HUD_DOCK);
 }
 
@@ -141,6 +145,73 @@ export function isWordsIgnored(el: Element): boolean {
   return isIgnored(el) || isReticleOverlay(el);
 }
 
+/** The framework error dialogs that cover the whole page, by the name a verdict gives them. */
+export const FrameworkErrorDialog = {
+  NEXT: 'Next.js error dialog',
+  VITE: 'Vite error overlay',
+} as const;
+
+/** Next mounts its dev UI in `nextjs-portal`. Only the dialog covers the page; the toast does not. */
+const NEXT_PORTAL = 'nextjs-portal';
+const NEXT_DIALOG = '[data-nextjs-dialog]';
+/** Vite mounts this element only while it shows an error, and it covers the viewport. */
+const VITE_OVERLAY = 'vite-error-overlay';
+
+/**
+ * The framework error dialog open over the page, and its host element, or undefined.
+ *
+ * `DEV_OVERLAYS` keeps Next's dev UI out of snapshots, so without this no check could see that an
+ * error dialog covers the page, and a text check on the content under it answered `yes` (#1768).
+ * Next 16 keeps the dialog mounted and hidden while it is collapsed to the issue badge, so only a
+ * visible dialog counts. A mounted one made every check on the page read `covered`.
+ */
+function openFrameworkErrorDialog(doc: Document): { name: string; host: Element } | undefined {
+  const vite = doc.querySelector(VITE_OVERLAY);
+  if (vite !== null) {
+    return { name: FrameworkErrorDialog.VITE, host: vite };
+  }
+  for (const portal of Array.from(doc.querySelectorAll(NEXT_PORTAL))) {
+    const root = portal.shadowRoot ?? capturedRootOf(portal);
+    const dialog = (root ?? portal).querySelector(NEXT_DIALOG);
+    if (null !== dialog && isVisible(dialog)) {
+      return { name: FrameworkErrorDialog.NEXT, host: portal };
+    }
+  }
+  const light = doc.querySelector(NEXT_DIALOG);
+  if (null === light || !isVisible(light)) {
+    return undefined;
+  }
+  return { name: FrameworkErrorDialog.NEXT, host: light };
+}
+
+/**
+ * The name of the framework error dialog over any of `matches`, or undefined. A match inside the
+ * dialog itself (the Vite overlay's own text) is what a user sees, so it is not covered.
+ */
+export function dialogCovering(matches: readonly Element[]): string | undefined {
+  const first = matches[0];
+  if (first === undefined) {
+    return undefined;
+  }
+  const dialog = openFrameworkErrorDialog(first.ownerDocument);
+  if (dialog === undefined) {
+    return undefined;
+  }
+  return matches.some((el) => !isInsideHost(el, dialog.host)) ? dialog.name : undefined;
+}
+
+/** Whether `el` is the dialog's host or inside it, across its shadow root. */
+function isInsideHost(el: Element, host: Element): boolean {
+  for (let node: Node | null = el; node !== null;) {
+    if (node === host) {
+      return true;
+    }
+    const root = node.getRootNode();
+    node = node.parentNode ?? (root instanceof ShadowRoot ? root.host : null);
+  }
+  return false;
+}
+
 /** What an app's modal looks like: a native `<dialog>` shown modally, or a library's `aria-modal`. */
 const APP_MODAL = 'dialog[open], [aria-modal="true"]';
 
@@ -154,9 +225,15 @@ const APP_MODAL = 'dialog[open], [aria-modal="true"]';
  */
 export function appModalOpen(doc: Document): boolean {
   for (const el of Array.from(doc.querySelectorAll(APP_MODAL))) {
-    if (el.closest(RETICLE_OVERLAY) !== null) continue;
-    if (el instanceof HTMLElement && (el.hidden || null !== el.closest('[hidden]'))) continue;
-    if (el instanceof HTMLElement && 'none' === getComputedStyle(el).display) continue;
+    if (el.closest(RETICLE_OVERLAY) !== null) {
+      continue;
+    }
+    if (el instanceof HTMLElement && (el.hidden || null !== el.closest('[hidden]'))) {
+      continue;
+    }
+    if (el instanceof HTMLElement && 'none' === getComputedStyle(el).display) {
+      continue;
+    }
     return true;
   }
   return false;

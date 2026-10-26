@@ -323,3 +323,54 @@ it('HTML_TAG_TO_ARIA_ROLE covers the common mistakes and no non-rendered tags', 
   expect(HTML_TAG_TO_ARIA_ROLE.get('input')).toBe('textbox');
   expect(HTML_TAG_TO_ARIA_ROLE.get('nav')).toBe('navigation');
 });
+
+/**
+ * A framework error dialog over the page (#1768). The text under it is in the DOM, but a user sees
+ * only the dialog, so a presence check is unknown, never a plain `yes`, and the reason names it.
+ */
+it('is inconclusive, never a pass, when a framework error dialog covers the match', async () => {
+  const covered: PredicateSession = {
+    ...session,
+    command: () =>
+      Promise.resolve({
+        kind: 'command_result',
+        ok: true,
+        id: 'stub',
+        result: {
+          matched: true,
+          count: 1,
+          elements: [{ ref: 'e0', role: 'paragraph', name: '', states: [], visible: true }],
+          coveredBy: 'Next.js error dialog',
+        },
+      }),
+  };
+  const result = await evalElement(covered, { text: 'Welcome back' }, undefined, false, true);
+  expect(result.pass).toBe(false);
+  expect(result.inconclusive).toContain('Next.js error dialog');
+});
+
+/**
+ * Text a person cannot read (#1797). A cart total in the page background colour matched a text
+ * check and passed. The text is in the DOM, but nobody can see it, so the check is never a `yes`.
+ */
+it('is inconclusive, never a pass, when the matched text is unreadable', async () => {
+  const unreadable: PredicateSession = {
+    ...session,
+    command: () =>
+      Promise.resolve({
+        kind: 'command_result',
+        ok: true,
+        id: 'stub',
+        result: {
+          matched: true,
+          count: 1,
+          elements: [{ ref: 'e0', role: 'paragraph', name: '', states: [], visible: true }],
+          unreadable: 'text rgb(255, 255, 255) on rgb(255, 255, 255): contrast 1.00:1',
+        },
+      }),
+  };
+  const result = await evalElement(unreadable, { text: 'Total: $50' }, undefined, false, true);
+  expect(result.pass).toBe(false);
+  expect(result.inconclusive).toContain('contrast 1.00:1');
+  expect(result.assertion).toBe('element.readable');
+});

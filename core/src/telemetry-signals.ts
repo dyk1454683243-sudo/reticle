@@ -1,12 +1,13 @@
 /**
  * The product signals the event set could not answer: who is signed in, which workspace and which
  * agent client an event belongs to, which HUD page was opened, which sign-in prompts were seen, when a
- * project was linked, and how a Harness run started and ended.
+ * project was linked, how a Harness run started and ended, and what happened to the MCP proxy and
+ * its daemon when the link failed.
  *
  * Its own file so the vocabulary has one home and `telemetry.ts` only wires it in. Every value here is
  * a closed set, a boolean or a bucket: none of these fields can carry a URL, a path, a name or text.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { HudPanel, HudPromptSurface } from './wire/constants/hud-use.js';
 
 /**
@@ -108,6 +109,32 @@ export const HarnessRunOutcome = {
 } as const;
 export type HarnessRunOutcome = (typeof HarnessRunOutcome)[keyof typeof HarnessRunOutcome];
 
+/**
+ * Why a Harness run did not drive: only on a `blocked` or `failed` run. Closed, and read off the
+ * refusal that stopped it, never off its sentence, so a reworded message cannot change the count.
+ */
+export const HarnessRunReason = {
+  /** The project has no platform link, so there is nowhere to drive from. */
+  NOT_LINKED: 'not_linked',
+  /** The platform did not confirm the drive in time, or answered something unreadable. */
+  PLATFORM_UNREACHABLE: 'platform_unreachable',
+  /** The Harness is switched off for this project (the default until somebody turns it on). */
+  HARNESS_OFF: 'harness_off',
+  /** The workspace has no credits left. */
+  NO_CREDITS: 'no_credits',
+  /** The workspace has not claimed the Harness. */
+  NOT_ENTITLED: 'not_entitled',
+  /** An older build refused for low instrumentation. No longer sent: the Harness has no coverage gate. */
+  COVERAGE_GATE: 'coverage_gate',
+  /** The page and the daemon come from different builds, so every step would answer unknown. */
+  VERSION_SKEW: 'version_skew',
+  /** The drive started and broke. */
+  BROKEN: 'broken',
+  /** A refusal this list does not name. A growing count here is a gap in this list. */
+  OTHER: 'other',
+} as const;
+export type HarnessRunReason = (typeof HarnessRunReason)[keyof typeof HarnessRunReason];
+
 /** Who started a Harness run. `dashboard` is a run started from the platform's chat. */
 export const HarnessRunSource = {
   AGENT: 'agent',
@@ -129,6 +156,8 @@ export const HarnessRunSchema = z.object({
   /** Only on `completed`: journeys the run answered, and how many of those replayed with no model. */
   journeys: z.nativeEnum(CountBucket).optional(),
   replayed: z.nativeEnum(CountBucket).optional(),
+  /** Only on a `blocked` or `failed` run: why it did not drive. */
+  reason: z.nativeEnum(HarnessRunReason).optional(),
 });
 export type HarnessRun = z.infer<typeof HarnessRunSchema>;
 
@@ -156,4 +185,91 @@ export const SIGNAL_FIELDS = {
   link: PlatformLinkSchema.optional(),
   /** Only on `harness_run`. */
   harness: HarnessRunSchema.optional(),
+};
+
+// ── Transport: what happens to the MCP proxy and its daemon when the link fails ──
+// No block below carries a path, a port, a pid or a message.
+
+/**
+ * The socket error code behind a drop, as a closed set. Anything else reports `other`, so a new code
+ * cannot put free text on the wire.
+ */
+export const OutageErrCode = {
+  ECONNRESET: 'ECONNRESET',
+  ECONNREFUSED: 'ECONNREFUSED',
+  EPIPE: 'EPIPE',
+  ETIMEDOUT: 'ETIMEDOUT',
+  OTHER: 'other',
+} as const;
+export type OutageErrCode = (typeof OutageErrCode)[keyof typeof OutageErrCode];
+
+/** Why the MCP proxy process left. Each member names one exit path in the proxy. */
+export const ProxyExitReason = {
+  /** The client closed stdin. The normal end of a session. */
+  STDIN_END: 'stdin_end',
+  /** The client link was quiet for the idle window, with no work in flight. */
+  IDLE: 'idle',
+  /** Too many client-pipe disconnects since the last usable session: the client is gone. */
+  CLIENT_GONE_STORM: 'client_gone_storm',
+  /** The proxy could not start a daemon and had no way to continue. */
+  WAKE_FAILED: 'wake_failed',
+} as const;
+export type ProxyExitReason = (typeof ProxyExitReason)[keyof typeof ProxyExitReason];
+
+/** `mcp_proxy_exited`: the agent's MCP server process ended, and the agent lost its tools. */
+export const ProxyExitSchema = z.object({
+  reason: z.nativeEnum(ProxyExitReason),
+  /** How long the proxy process ran. */
+  uptimeMs: z.number().int().nonnegative(),
+  /** How many times the proxy lost its daemon stream in its life. */
+  drops: z.number().int().nonnegative(),
+  /** How many `tools/call` requests the client sent through this proxy. */
+  toolCalls: z.number().int().nonnegative(),
+  proxyId: z.string().min(1).max(64).optional(),
+});
+export type ProxyExit = z.infer<typeof ProxyExitSchema>;
+
+/** `daemon_died_unclean`: a daemon start found the pidfile of a daemon that never stopped cleanly. */
+export const DaemonDeathSchema = z.object({
+  /** Time from the dead daemon's start (its pidfile write) to this discovery. */
+  ageMs: z.number().int().nonnegative(),
+});
+export type DaemonDeath = z.infer<typeof DaemonDeathSchema>;
+
+/** How the parent started the daemon. On Windows a start through WMI leaves the Job Object. */
+export const DaemonSpawnMethod = {
+  /** A detached child of the parent. On Windows it stays in the job of the parent. */
+  DETACHED: 'detached',
+  /** Windows only: started through WMI `Win32_Process.Create`, outside every job. */
+  WMI: 'wmi',
+  /** Windows only: the WMI start failed, so the parent used the detached start. */
+  WMI_FALLBACK: 'wmi_fallback',
+} as const;
+export type DaemonSpawnMethod = (typeof DaemonSpawnMethod)[keyof typeof DaemonSpawnMethod];
+
+/** What held the port when a wake was refused. */
+export const WakeRefusalPresence = {
+  /** Something that is not a Reticle daemon holds the port. */
+  FOREIGN: 'foreign',
+  /** A Reticle daemon for a different project holds the port. */
+  OTHER_PROJECT: 'other_project',
+} as const;
+export type WakeRefusalPresence = (typeof WakeRefusalPresence)[keyof typeof WakeRefusalPresence];
+
+/** `wake_refused`: the proxy would not use the daemon port it found. */
+export const WakeRefusalSchema = z.object({
+  presence: z.nativeEnum(WakeRefusalPresence),
+});
+export type WakeRefusal = z.infer<typeof WakeRefusalSchema>;
+
+/** The blocks this file adds to `TelemetryEventSchema`, spread into it there. */
+export const TRANSPORT_FIELDS = {
+  /** Only on `mcp_proxy_exited`. */
+  proxyExit: ProxyExitSchema.optional(),
+  /** Only on `daemon_died_unclean`. */
+  daemonDeath: DaemonDeathSchema.optional(),
+  /** Only on `wake_refused`. */
+  wakeRefusal: WakeRefusalSchema.optional(),
+  /** Only on `daemon_started`: how the parent started the daemon. A scalar. */
+  spawnMethod: z.nativeEnum(DaemonSpawnMethod).optional(),
 };

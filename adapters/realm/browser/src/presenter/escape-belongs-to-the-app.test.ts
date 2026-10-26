@@ -38,7 +38,8 @@ describe('Escape and the app under test', { timeout: HUD_TIMEOUT_MS }, () => {
     const p = new Presenter({});
     p.mount();
     p.sessionStart();
-    // The default state the report was filed against: HUD expanded, nothing of ours focused.
+    // The state the report was filed against: HUD expanded, nothing of ours focused.
+    (document.querySelector('[data-reticle-fab]') as HTMLElement).click();
     expect(overlay()?.getAttribute(MIN_ATTR)).not.toBe('1');
     const event = pressEscape();
     expect(

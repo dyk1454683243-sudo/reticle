@@ -19,7 +19,10 @@
  * `framework-adapter.test.ts` asserts the seam between the two halves.
  */
 
-import { Framework, UiLibrary } from '@/detect/detect.js';
+import { Framework, UiLibrary, installCommand, installCommandParts } from '@/detect/detect.js';
+import { installFailureHint } from '@/diagnose/install-hint.js';
+import { installRetries } from '@/diagnose/install-retries.js';
+import { usesReactKit } from '@/patch/snippets.js';
 import { StepTitle } from './connect-steps.js';
 import {
   astroSteps,
@@ -288,4 +291,140 @@ export const FRAMEWORK_ADAPTERS: Record<Framework, FrameworkAdapter> = {
  */
 export function frameworkSteps(input: PlanInput): Step[] {
   return FRAMEWORK_ADAPTERS[input.detection.framework].steps(input);
+}
+
+/**
+ * Pin the SDK to the CLI's own version.
+ *
+ * `pnpm add -D @reticlehq/react` once installed an older release in one project while npm and yarn
+ * took the current one in the next — a stale registry metadata cache, invisible to everyone. A
+ * version-skewed SDK talking to a newer daemon is the `-32000` failure path: the app connects, the
+ * protocol disagrees, and nothing on either side names a version. Asking for the CLI's exact version
+ * makes the cache irrelevant, and a skewed pair impossible to install by accident.
+ */
+function pinnedPackages(
+  packages: readonly string[],
+  version: string | undefined,
+): readonly string[] {
+  if (version === undefined || 0 === version.length) {
+    return packages;
+  }
+  return packages.map((p) => `${p}@${version}`);
+}
+
+/**
+ * The dev-dependencies `reticle init` installs — kit (or sensor) first, build plugin next.
+ *
+ * `uiLibrary` matters because the framework does not always name the renderer. The rule below was
+ * already written for Nuxt, correctly, and applied only there: a Vue app on plain Vite is
+ * `Framework.VITE` and a SvelteKit app renders Svelte, and both were being handed the React kit
+ * right after `init` had detected the real UI library and said so on screen.
+ */
+export function frameworkPackages(
+  framework: Framework,
+  uiLibrary: UiLibrary = UiLibrary.UNKNOWN,
+): readonly string[] {
+  const kit = usesReactKit(uiLibrary, framework) ? RETICLE_REACT_KIT : RETICLE_BROWSER_SDK;
+  return FRAMEWORK_ADAPTERS[framework].packages(kit);
+}
+
+/**
+ * What to say when the install command fails.
+ *
+ * pnpm's `minimumReleaseAge` refuses any release younger than the configured window — a deliberate
+ * supply-chain policy, not a bug — with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. Unpinned it silently
+ * resolves to an OLDER version instead, which is how an app ends up running a stale SDK against a
+ * newer daemon: the connection succeeds, the protocol disagrees, and the failure surfaces as -32000
+ * with nothing naming a version. Pinning turns that into this loud failure, which is the better
+ * trade — but only if the message says what to do about it.
+ */
+
+/**
+ * Is this package already declared at the version we would pin?
+ *
+ * The caret is the point. `npm i -D pkg@3.2.0` WRITES `^3.2.0`, so on every later run the pinned
+ * `3.2.0` failed a string comparison against the range npm had just created, and init re-installed
+ * for ever. Only the two forms a package manager writes by itself are read - an exact version, and
+ * `^`/`~` over that same version.
+ *
+ * Everything else installs. A false "already" leaves somebody with no SDK and an install that
+ * claims to have run; a redundant install only costs time, so the unreadable cases go the safe way.
+ */
+function alreadyDeclared(declared: string | undefined, pinned: string | undefined): boolean {
+  if (declared === undefined) {
+    return false;
+  }
+  if (pinned === undefined || 0 === pinned.length) {
+    return true;
+  }
+  return declared === pinned || `^${pinned}` === declared || `~${pinned}` === declared;
+}
+
+export function installStep(input: PlanInput): Step {
+  const pm = input.detection.packageManager;
+  // `Detection.packageManagerCommand` (see `preflight.ts`, #1149). Falling back to `pm` covers every
+  // caller that never went through preflight (tests, and any future one).
+  const pmCommand = input.detection.packageManagerCommand ?? pm;
+  const packages = pinnedPackages(
+    frameworkPackages(input.detection.framework, input.detection.uiLibrary),
+    input.options.sdkVersion,
+  );
+  const command = installCommand(pm, packages, pmCommand);
+  /*
+   * A re-run over an already-wired project does NO dependency work.
+   *
+   * Reported from the field: `init` on an instrumented npm-workspaces project ran a pnpm dependency
+   * migration, which moved the existing `node_modules` aside and broke the dev server. Whatever
+   * manager gets chosen, the redundant install is the step that touches the tree — so the fix that
+   * matters is not running one that nothing needs. `init` is documented as idempotent; this is the
+   * step that was not.
+   */
+  const declared = input.detection.dependencies ?? {};
+  const version = input.options.sdkVersion;
+  const names = frameworkPackages(input.detection.framework, input.detection.uiLibrary);
+  if (names.length > 0 && names.every((n) => alreadyDeclared(declared[n], version))) {
+    return {
+      title: 'Install dependencies',
+      target: 'package.json',
+      status: StepStatus.ALREADY,
+      detail: `${names.join(', ')} already declared${version === undefined || 0 === version.length ? '' : ` at ${version}`}`,
+    };
+  }
+  // Never install into a linked tree: the package manager replaces the link (a workspace's tree).
+  if (true === input.nodeModulesLinked) {
+    return {
+      title: 'Install dependencies',
+      target: 'package.json',
+      status: StepStatus.SKIP,
+      detail: `skipped: node_modules is a link to another tree, which an install here would replace; install them where it points: ${command}`,
+    };
+  }
+  // The person said `--no-install`: a choice, not a step left undone, so not a ⚠.
+  if (!input.options.install) {
+    return {
+      title: 'Install dependencies',
+      target: 'package.json',
+      status: StepStatus.SKIP,
+      detail: `skipped (--no-install); install them yourself: ${command}`,
+    };
+  }
+  const parts = installCommandParts(pm, packages, [], pmCommand);
+  return {
+    title: 'Install dependencies',
+    target: 'package.json',
+    status: StepStatus.APPLY,
+    detail: command,
+    exec: {
+      command: parts.command,
+      args: parts.args,
+      fallback: `${command}\n\n${installFailureHint(pm, pmCommand)}`,
+    },
+    retries: installRetries(
+      pm,
+      packages,
+      frameworkPackages(input.detection.framework, input.detection.uiLibrary),
+      input.options.sdkVersion,
+      pmCommand,
+    ),
+  };
 }

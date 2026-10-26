@@ -57,4 +57,21 @@ describe('scrollContainer', () => {
     expect(typeof r.atEnd).toBe('boolean');
     expect(typeof r.scrolled).toBe('boolean');
   });
+
+  it('5: a valid fraction jumps to that fraction of scrollHeight', () => {
+    const div = scrollableDiv(1000, 200);
+    const r = scrollContainer(refs.refFor(div), undefined, 0.5);
+    expect(r.scrollTop).toBe(500);
+  });
+
+  it('6: a fraction outside 0–1 is refused with an error naming the range', () => {
+    const div = scrollableDiv(1000, 200);
+    const ref = refs.refFor(div);
+    expect(() => scrollContainer(ref, undefined, 1.5)).toThrow(
+      /scroll fraction must be between 0 and 1/,
+    );
+    expect(() => scrollContainer(ref, undefined, -0.2)).toThrow(
+      /scroll fraction must be between 0 and 1/,
+    );
+  });
 });

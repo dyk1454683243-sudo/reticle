@@ -104,3 +104,31 @@ describe('resolveActTarget — a ref Reticle never issued', () => {
     expect(command).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * An agent took a look, then passed the ref it got as a string target: `{ target: "e7" }`. The
+ * string was read as a query that names nothing, so the page was searched for nothing and the answer
+ * was "target matched no element ... widen the query". The agent took the ref for stale, and tried
+ * a CSS selector, which got the same answer.
+ */
+describe('resolveActTarget — a string target', () => {
+  it('takes a ref given as the target as that ref, and does not query', async () => {
+    const { session, command } = sessionThatMustNotBeQueried();
+    expect(await resolveActTarget(session, { target: 'e7', action: ActionType.CLICK })).toEqual({
+      kind: 'ref',
+      ref: 'e7',
+    });
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it('refuses a target that names nothing to find, and does not search the page', async () => {
+    const { session, command } = sessionThatMustNotBeQueried();
+    const r = await resolveActTarget(session, {
+      target: 'button.counter:first-child',
+      action: ActionType.CLICK,
+    });
+    expect(r.kind).toBe('error');
+    expect('error' === r.kind ? r.message : '').toContain('Nothing was searched');
+    expect(command).not.toHaveBeenCalled();
+  });
+});

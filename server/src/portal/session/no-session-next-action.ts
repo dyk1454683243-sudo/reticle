@@ -32,6 +32,8 @@ interface NextActionFacts {
   everConnected: boolean;
   initialized: boolean;
   listening: readonly number[];
+  /** Scanned ports that serve a page from a process that cannot be tied to this project. */
+  otherListeners?: readonly number[];
   dev: DevCommand | undefined;
   /**
    * File-existence predicate for the project root, pure for testing.
@@ -159,7 +161,20 @@ function reopenableUrl(raw: string | undefined): { url: string; port: number } |
  * bin on PATH, so a bare `reticle init` fails with "command not found" exactly where it is handed out.
  */
 const CLI = 'npx @reticlehq/server';
-const INIT_COMMAND = `${CLI} init`;
+export const INIT_COMMAND = `${CLI} init`;
+/**
+ * The consent question for wiring, in one wording for every place that offers `init`: the
+ * handshake, the first session call, every next action and the plugin hook. `init` changes the user's files, so the
+ * agent asks first. The lease changes nothing, so it needs no question.
+ */
+export function wiringConsent(init: string = INIT_COMMAND): string {
+  return (
+    '`init` changes files: it adds a dev-only SDK to package.json and the lockfile, edits the ' +
+    'build config and starts the dev server. Ask the user before you wire the app. If they ' +
+    `agree, run \`${init}\` in the app's folder. If they decline, do not ask again.`
+  );
+}
+
 const OPEN_COMMAND = `${CLI} open`;
 const LOCALHOST = 'http://localhost';
 
@@ -172,7 +187,7 @@ const ZERO_INSTALL_SEES =
   'or source file:line until the app is wired';
 
 /** The zero-install call, with the URL only when it can be named without guessing. */
-function zeroInstallLease(url: string | undefined): string {
+export function zeroInstallLease(url: string | undefined): string {
   // Through reticle_run: reticle_lease is not on the default surface, and reticle_run is on every one (#1547).
   return `reticle_run { tool: "reticle_lease", args: { action: "acquire", url: "${url ?? "<the app's URL>"}" } }`;
 }
@@ -180,6 +195,21 @@ function zeroInstallLease(url: string | undefined): string {
 /** Nothing here says this project was ever wired: no config, no recorded connection, no session. */
 function neverWired(facts: NextActionFacts): boolean {
   return !facts.initialized && true !== facts.previouslyConnected && !facts.everConnected;
+}
+
+/**
+ * The start advice's first claim when no port is this project's. A scan that heard a page it could
+ * not tie to this project says so, because "nothing is listening" is then false.
+ */
+function notThisProject(others: readonly number[] | undefined): string {
+  if (others === undefined || 0 === others.length) {
+    return 'nothing is listening on the ports Reticle scans, so the app is probably not running — ';
+  }
+  const named = others.map((port) => `:${String(port)}`).join(', ');
+  return (
+    `${named} serves a page, but its process does not run in this project's folder, so this app ` +
+    `is probably not running — if one of them IS this app, open it instead of starting a second one, `
+  );
 }
 
 export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
@@ -349,7 +379,7 @@ export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
         : ` The session that was on ${redactUrl(stopped.url)} is gone and nothing listens there now.`;
     const notRunning = departedPortIsGone
       ? "nothing answers on the port this project's app was last on, so the app is probably not running — "
-      : 'nothing is listening on the ports Reticle scans, so the app is probably not running — ';
+      : notThisProject(facts.otherListeners);
     if (dev === undefined) {
       if (facts.exists !== undefined && !facts.exists('package.json')) {
         const ecosystem = detectNonJsEcosystem(facts.exists);
@@ -407,7 +437,7 @@ export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
         (neverWired(facts)
           ? ` Once it is up, ${zeroInstallLease(dev.port === undefined ? undefined : `${LOCALHOST}:${String(dev.port)}`)} ` +
             `gets a verdict with nothing installed (${ZERO_INSTALL_SEES}); ` +
-            `\`${facts.init ?? INIT_COMMAND}\` wires it for good — then restart the dev server and reload.`
+            `To wire it for good: ${wiringConsent(facts.init ?? INIT_COMMAND)} Then restart the dev server and reload.`
           : ''),
     };
   }
@@ -426,9 +456,9 @@ export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
         `something is listening (${ports}) but no \`.reticle.json\` was found, so the app may ` +
         'carry no Reticle SDK. For a verdict NOW with nothing installed: ' +
         `${zeroInstallLease(target === undefined ? undefined : `${LOCALHOST}:${String(target)}`)} — ` +
-        `${ZERO_INSTALL_SEES}. To wire it for good, run this command yourself (it runs in the ` +
-        "APP's own folder, not where this daemon stands), then restart the dev server and reload " +
-        'the page.',
+        `${ZERO_INSTALL_SEES}. To wire it for good: ${wiringConsent(facts.init ?? INIT_COMMAND)} ` +
+        "The app's folder is not always where this daemon stands. Then restart the dev server and " +
+        'reload the page.',
     };
   }
 
@@ -471,7 +501,8 @@ export function nextActionFor(facts: NextActionFacts): NoSessionNextAction {
 /** The same action as one sentence, for the prose message the human reads. */
 export function renderNextAction(next: NoSessionNextAction): string {
   const command = next.command;
-  return command === undefined
+  // `init` changes the user's files, so its line repeats the consent in the reason, not an order.
+  return command === undefined || NoSessionAction.RUN_INIT === next.action
     ? `NEXT ACTION: ${next.reason}`
     : `NEXT ACTION: run \`${command}\` — ${next.reason}`;
 }

@@ -20,7 +20,8 @@
  * ancestors and no inherited cursor, and judging that would misread a click that worked.
  */
 import { ActionType } from '@reticlehq/core';
-import { getRole, parentAcrossShadowBoundary } from '@/dom/a11y.js';
+import { getRole } from '@/dom/a11y.js';
+import { parentAcrossShadowBoundary } from '@/dom/shadow-registry.js';
 import { INTERACTIVE } from '@/dom/snapshot.js';
 
 /*

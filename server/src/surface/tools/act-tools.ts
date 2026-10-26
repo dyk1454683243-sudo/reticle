@@ -39,7 +39,7 @@ import { causalSummary } from '@/judgement/capsule/causal-summary.js';
 import { findContradictions } from '@reticlehq/engine/disagreement/contradictions.js';
 import { crashedRuleNotes } from '@reticlehq/engine/disagreement/contradiction-folds.js';
 import { gapsForAction } from '@reticlehq/engine/evidence/instrumentation-gaps.js';
-import { withGapNovelty } from './gap-novelty.js';
+import { engineBlindSpotsOutput, withGapNovelty } from './gap-novelty.js';
 import { noteSessionGaps } from '@reticlehq/engine/evidence/gap-ledger.js';
 import { isChangeUndeclared } from '@reticlehq/engine/evidence/undeclared-change.js';
 import { intentDebt, ledgerFor } from '@/memory/intent/open-intents.js';
@@ -99,9 +99,10 @@ import { asActionType, gradeOf } from './act/act-helpers.js';
 import { resolveActTarget } from './act/act-target.js';
 import { screenRequestFindings, withAdvisories } from './act/screen-request.js';
 import { tryRealInput, rewriteUploadArgs, HOVER_NEEDS_POINTER_MSG } from './real-input-attempt.js';
+import { sessionRoot } from '@/memory/project/session-root.js';
 import { gradeOfPredicate } from './assert/assert-grade.js';
 import { readAlreadyTrue } from './act/already-true.js';
-import { noteSourceSeen } from '@/portal/session/recorded-gaps.js';
+import { engineBlindSpotsField, noteSourceSeen } from '@/portal/session/recorded-gaps.js';
 
 /**
  * The action vocabulary, derived from ActionType — never retyped: a hand-copied list once omitted
@@ -113,9 +114,8 @@ const actionTypeEnum = z.enum(ACTION_TYPE_VALUES as [string, ...string[]]);
 /**
  * Single dispatch point for every ACT and ACT_SEQUENCE command.
  *
- * This is the seam the reviewer asked for: instead of wiring rewriteUploadArgs at three separate
- * call sites (reticle_act, reticle_act_and_wait, reticle_act_sequence) we intercept once here,
- * which also covers flow-replay, crawl, and any future dispatch site that goes through this helper.
+ * reticle_act, act_and_wait and act_sequence rewrite uploads here, once. The path resolves against
+ * the session's project, not the daemon's folder, so a worktree uploads its own fixture (#1769).
  *
  * captureAct is called AFTER this, so the flow-recording captures the pre-rewrite args (the path
  * the agent actually wrote) rather than the base64 blob — replay would otherwise send 750 KiB of
@@ -128,7 +128,7 @@ export async function actCommand(
   timeoutMs?: number,
 ): Promise<import('@reticlehq/core').CommandResult> {
   const rewritten = await rewriteUploadArgs(
-    deps,
+    { fs: deps.fs, reticleRoot: sessionRoot(deps, session.id) },
     'string' === typeof actArgs['action'] ? actArgs['action'] : '',
     asRecord(actArgs['args']),
   );
@@ -167,14 +167,14 @@ export const ACT_TOOLS: ToolDef[] = [
           `Element ref (e.g. 'e42') from reticle_snapshot/reticle_query — stable until the element leaves the DOM, so no re-snapshot between actions. Give this OR \`target\`. A press of Escape, Tab, or a modifier shortcut (Cmd+K) is a document key and needs neither.`,
         ),
       target: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           'Find the element and act on it in ONE call, instead of a reticle_query round trip first: { testid } | { text } | { role, name } | { label }. Refuses if it matches more than one, rather than guessing.',
         ),
       action: actionTypeEnum.describe('Action to perform.'),
       args: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           'Action-specific arguments: { value } for fill/select, { text } for type/press (the key NAME, e.g. Escape or Tab), { modifiers: ["Meta","Shift"] } for a press shortcut (Meta/Control/Shift/Alt — a Cmd+K), { toRef } for drag (the ref to drop ON — without it the drag lands nowhere), { native: true } to force a trusted native click, { holdMs: N } to keep the pointer or the key DOWN for N ms (hold-to-confirm controls; effect.heldMs reports what was achieved), { confirmDangerous: true } to allow a potentially destructive control — a permission gate, NOT a duration. For press: { keys: ["Control","k"] } holds several keys down TOGETHER (pressed in order, released in reverse) and { code } names the physical key — both stay on the in-page dispatcher, the only path that can express them. For upload: { path } is a path on disk (absolute or relative to the project root; the daemon reads the file and delivers real bytes to the file picker — this is the way to verify document-ingestion flows); or { name, content?, type? } to supply inline bytes directly.',
@@ -284,7 +284,7 @@ export const ACT_TOOLS: ToolDef[] = [
         // Keep what only this call measured, so the observe that judges this window can ask whether
         // anything happened INSIDE the target — the one fact that separates a dead control from a
         // page that was merely busy with something else.
-        session.lastAct.markActed(since, action, mutatedWithin(r), asString(args['ref']));
+        session.lastAct.markActed(since, action, mutatedWithin(r), targetRef.ref);
         return withControl(session, {
           since,
           inputMode: InputMode.SYNTHETIC,
@@ -330,14 +330,14 @@ export const ACT_TOOLS: ToolDef[] = [
           `Element ref (e.g. 'e42') from reticle_snapshot/reticle_query — stable until the element leaves the DOM, so no re-snapshot between actions. Give this OR \`target\`. A press of Escape, Tab, or a modifier shortcut (Cmd+K) is a document key and needs neither.`,
         ),
       target: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           'Find the element and act on it in ONE call, instead of a reticle_query round trip first: { testid } | { text } | { role, name } | { label }. Refuses if it matches more than one, rather than guessing.',
         ),
       action: actionTypeEnum.describe('Action to perform.'),
       args: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           'Action-specific arguments: { value } for fill/select, { text } for type/press (the key NAME, e.g. Escape or Tab), { modifiers: ["Meta","Shift"] } for a press shortcut (Meta/Control/Shift/Alt), { toRef } for drag (the ref to drop ON — without it the drag lands nowhere), { confirmDangerous: true } for a potentially destructive control. For upload: { path } is a path on disk (absolute or relative to project root; daemon reads real bytes) or { name, content?, type? } for inline bytes.',
@@ -363,6 +363,7 @@ export const ACT_TOOLS: ToolDef[] = [
       durable: durableOutput,
       effect: z
         .unknown()
+        .optional()
         .describe('The reticle_act result (dispatched, settled, inputMode, etc.).'),
       verdict: z.object({
         pass: z.boolean(),
@@ -394,11 +395,13 @@ export const ACT_TOOLS: ToolDef[] = [
       }),
       trace: z
         .unknown()
+        .optional()
         .describe(
           'Reaction digest: { window_ms, summary } of what the app did (DOM/network/route/console/signal counts). The full per-event timeline is one reticle_observe { since } away.',
         ),
       summary: z
         .unknown()
+        .optional()
         .describe(
           'Bounded causal summary: net {total,errors,headline}, consoleErrors, statePathsChanged, storageKeysChanged, stateDiffs [{path,from,to}], storageDiffs [{key,from,to}], route, signals, layoutShift, longTasks — real before→after diffs (capped), not just readings. THIS IS THE ANSWER TO "what did that click do": console, network, storage and state for this action are all here, so do NOT follow an act with reticle_console + reticle_network + reticle_state to find out — call them only to go deeper into something this block already pointed at. Every list is length-capped so the verdict can never be the field a client truncates; `elided` says which lists lost entries and how many. `stateUnwatched: true` means NO subscribable store is registered, so an empty stateDiffs means unwatched, NOT unchanged — no state conclusion is available until one is registered.',
         ),
@@ -445,8 +448,10 @@ export const ACT_TOOLS: ToolDef[] = [
         .describe(
           'What the APP did not tell Reticle, and the one change that would fix it — each entry is { kind, missing, cost, fix, source?, ref? }. Reported ONLY where an absence made THIS verdict weaker (a red that cannot name a file:line, a state assertion with no registered store, a DOM change no signal announced, a route change nothing signalled); never a survey of the page, so an entry is always work worth doing now. OMITTED when the app told Reticle everything it needed. Applying `fix` makes every later verdict on this app stronger, not just this one.',
         ),
+      engineBlindSpots: engineBlindSpotsOutput,
       honesty: z
         .unknown()
+        .optional()
         .describe(
           'The verdict trust block { grade, attribution, coverage, integrity, envelope? } — a green never looks stronger than this. Gate on grade ≥ net AND integrity.clean. Fields that were not measured are OMITTED rather than reported as zero, so treat an absent `envelope` as "not sampled", never as a failure.',
         ),
@@ -566,7 +571,7 @@ export const ACT_TOOLS: ToolDef[] = [
             since,
             asString(args['action']),
             mutatedWithin(asRecord(actResult.result)),
-            asString(args['ref']),
+            resolved.ref,
           );
         }
 
@@ -626,17 +631,12 @@ export const ACT_TOOLS: ToolDef[] = [
           ? undefined
           : buildDivergenceCapsule(links, windowEvents, bufferLost);
         /*
-         * The blast radius travels on a GREEN too, which is the only verdict where it is news.
+         * The blast radius goes on a GREEN too. On a red the capsule carries it. On a green, a click
+         * that works and also sends a DELETE did extra damage, and no other field shows that.
+         * It is attached only when it is not empty, because its presence is the signal. The full
+         * capsule stays red-only: its divergence walk and causal summary answer a red's question.
          *
-         * On a red the capsule already carries it and the fault is the headline. On a green nothing
-         * carried it at all — and "the consequence I declared held, AND this action also posted
-         * somewhere I never mentioned" is exactly the finding a passing verdict buries. A click that
-         * works and also fires a DELETE is a green that did extra damage.
-         *
-         * One pass over a window already in hand, and only attached when it is non-empty: a field
-         * that is always present teaches a reader to skim it, and the whole value here is that its
-         * presence is the signal. The full capsule stays red-only — the divergence walk and the
-         * causal summary are the expensive halves and answer a question a green does not have.
+         * One pass over a window that is already in hand.
          */
         const greenRadius = verdict.pass ? blastRadius(links, windowEvents) : [];
         // Grade from what the verdict PROVED, not what it declared. A green anyOf holds on one branch, so
@@ -940,14 +940,12 @@ export const ACT_TOOLS: ToolDef[] = [
           // where an absence made this very verdict weaker — never as a survey of the page.
           /*
            * …and, on a pass, whether anybody said what this verdict was FOR.
-           *
            * Intent capture was reachable and unasked-for: the argument sits on this very tool, and
            * the only nudge lived on `flow_save` — which a build-mode agent may never reach. An
            * optional capability nobody is told about is one nobody uses, measured on `bodies` this
            * same week.
            */
-          // Remedy once per session, facts every time — see gap-novelty.ts. `no-source-mapping`
-          // shipped 11 identical copies of its fix text in one measured drive.
+          // Remedy once per session, facts every time: see gap-novelty.ts for the measurement.
           ...(gaps.length > 0 || intentGap !== undefined
             ? {
                 instrumentationGaps: withGapNovelty(
@@ -956,6 +954,7 @@ export const ACT_TOOLS: ToolDef[] = [
                 ),
               }
             : {}),
+          ...engineBlindSpotsField(session.id, until, args['intent'], openIntents),
           // Cross-channel disagreement, reported WITH the action that caused it.
           //
           // This is the one finding here a human structurally cannot make — they watch one channel,

@@ -15,9 +15,9 @@ No flags.
 ## What it does, in order
 
 1. Ask the registry what is available.
-2. Compare by **direction**, not inequality. A registry version that merely differs is not a newer one, and the old check happily installed a downgrade.
+2. Compare by **direction**. Reticle installs a registry version only when it is newer than the running version. It never installs an older one.
 3. Nothing newer: if this project's SDK is older than the CLI, bring it up to the CLI's version; then log `reticle_update` with `ok: false` and `message: "already on the latest version"`, and stop.
-4. Otherwise refresh the Reticle block in agent rule files that already carry one, then sync the **app's SDK first**. `reticle update` used to swap only the CLI, so the command whose job is keeping an install current was itself a way to produce a version-skewed pair.
+4. Otherwise, update the Reticle block in the agent rule files that already have one. Then update the **app's SDK first**, so that the CLI and the SDK stay on the same version.
 5. Then apply the CLI update, which execs and exits. Your agent client restarts it.
 
 ## What it prints
@@ -27,6 +27,8 @@ No flags.
 | `reticle_update` | `ok`, and either `from` and `to`, or `message` and `version` |
 | `reticle_update_sdk` | `synced`, `packages`, `to`, `packageManager`. Or `synced: false` with `reason: "no @reticlehq packages in this project"` |
 | `reticle_update_sdk_failed` | A `hint` naming the exact command to run by hand |
+| `reticle_update_applying`, `reticle_update_applied` | `version`, `executionKind` (`global`, `local` or `npx`) |
+| `reticle_update_npx_strategy` | `note`: under `npx` nothing is installed; the next start fetches the new version |
 | `reticle_rules_refreshed` | `files`, `to`: the agent rule files whose Reticle block was brought up to the new version |
 | `reticle_update_failed` | The error |
 
@@ -57,7 +59,8 @@ npx @reticlehq/server update
 ```
 
 <Warning>
-  Attaching to a running daemon is what a daemon is for, which means an upgrade does not take effect
-  until that daemon dies. Run [`reticle stop`](/cli/stop) afterwards if you need the new build
-  serving immediately.
+  A daemon that is already running keeps its own version. When no tab and no other agent is attached
+  to it, your agent's new MCP server stops it and starts the new version. When a tab or another
+  agent is attached, the old daemon keeps running. Run [`reticle restart`](/cli/restart) to start
+  the new version now.
 </Warning>

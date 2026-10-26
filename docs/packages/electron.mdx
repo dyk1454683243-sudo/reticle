@@ -73,13 +73,25 @@ The handler calls `webContents.capturePage()`, writes the PNG into a per-process
 
 ## Renderer wiring
 
-The renderer still needs the SDK. A packaged app is a production build, so the connect call has to opt in:
+The renderer still needs the SDK. Connect only in development, never in the app you ship. For example, send `!app.isPackaged` from the main process to the renderer, and connect only when it is true. An Electron renderer reports `NODE_ENV=production`, so the call also needs `allowInProduction`:
 
 ```ts
-reticle.connect({ allowInProduction: true });
+import { reticle } from '@reticlehq/browser';
+
+// isDevelopment is `!app.isPackaged`, sent from the main process.
+if (isDevelopment) {
+  // reticle.local.js holds this machine's pairing token. Do not commit it.
+  import('./reticle.local.js')
+    .catch(() => ({}))
+    .then((local) => reticle.connect({ allowInProduction: true, token: local.token }));
+}
 ```
 
-Or, with the Vite plugin, `reticle({ desktop: true })`.
+The bridge refuses a connect without the pairing token, also from a `file://` page. For an Electron app without the Vite plugin, `reticle init` does not write `reticle.local.js`. Make it from `~/.reticle/pairing-token` as the [browser page](/packages/browser) shows, and add it to `.gitignore`.
+
+Keep `reticle.local.js` out of the package: electron-builder `files: ["!reticle.local.js"]`, or Electron Forge `packagerConfig.ignore: [/reticle\.local\.js$/]`.
+
+With the Vite plugin, use `reticle({ desktop: true })` instead. The plugin passes the token and `allowInProduction`, and a production-mode build ships no Reticle code.
 
 <Card title="Desktop setup in full" icon="display" href="/desktop">
   Electron and Tauri wiring, and what `reticle doctor` checks for each.

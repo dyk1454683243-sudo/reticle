@@ -17,7 +17,7 @@ npx @reticlehq/server affected [--since <ref>] [file...]
 | `file...` | strings, positional | none | Explicit changed files |
 | `--since <ref>` | string | `HEAD` when no files are given | Also include files git reports as changed since this ref |
 
-With nothing after it, `reticle affected` means the working tree against `HEAD`. It used to be a usage error, while the rule `reticle init` writes into the agent's own instruction file told the agent to run it.
+With nothing after it, `reticle affected` compares the working tree with `HEAD`.
 
 ## What it prints
 

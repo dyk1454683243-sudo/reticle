@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomUUID } from 'node:crypto';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError, type ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { isPredicateParam } from '@reticlehq/engine/question/predicate/predicate-eval.js';
 import { isToonable, resultToToon, MCP_SERVER_NAME } from '@reticlehq/core';
@@ -11,14 +11,15 @@ import {
   describeToolSurface,
   TOOL_SURFACE,
   type ToolSurface,
+  toolAnnotations,
 } from '@/surface/tools/tool-surface.js';
 import { ReticleTool } from '@reticlehq/core';
-import { SHARED_PARAM_SHORT } from './shared-params.js';
-import { buildDynamicTools } from '@/surface/tools/dynamic-tools.js';
+import { sharedParamShort } from './shared-params.js';
+import { buildDynamicTools, descriptionOf } from '@/surface/tools/dynamic-tools.js';
 import { runTool } from '@/surface/tools/invoke-tool.js';
 import { sessionEnvelopeShape, newSnapshotCache, type ToolCall } from '@/surface/tools/tool-kit.js';
 import { buildErrorPayload, codedRefusalOf } from '@/surface/tools/error-recovery.js';
-import { takeVersionSkewOnto } from '@/command/version/version-nudge.js';
+import { connectionSkew, takeVersionSkewOnto } from '@/command/version/version-nudge.js';
 import { resultIsError } from './faults/mcp-is-error.js';
 import { consumerVerdictRefusal, reservedVerdictKeysIn } from './consumer-verdict-guard.js';
 import { buildServerInstructions, type InstructionState } from './server-instructions.js';
@@ -46,7 +47,12 @@ import { SERVER_VERSION } from '@/command/version/identity/server-version.js';
 import { setMcpClientNameHook } from '@/telemetry/feedback-context.js';
 import { getSessionMetrics } from '@/telemetry/session-metrics.js';
 import { reportMcpConnected } from '@/telemetry/mcp-connection.js';
-import { noteAgentAttached, noteAgentDetached, runAsAgent } from '@/hooks/coding-agents.js';
+import {
+  noteAgentAttached,
+  noteAgentDetached,
+  noteAgentSession,
+  runAsAgent,
+} from '@/hooks/coding-agents.js';
 import { parsePredicate } from '@reticlehq/engine/question/predicate/predicate-parse.js';
 
 /**
@@ -61,9 +67,11 @@ import { parsePredicate } from '@reticlehq/engine/question/predicate/predicate-p
  */
 export function withSessionEnvelope(
   _name: string,
-  outputSchema: z.ZodRawShape | undefined,
-): z.ZodRawShape | undefined {
-  if (outputSchema === undefined) return outputSchema;
+  outputSchema: Record<string, z.ZodType> | undefined,
+): Record<string, z.ZodType> | undefined {
+  if (outputSchema === undefined) {
+    return outputSchema;
+  }
   return { ...sessionEnvelopeShape, ...outputSchema };
 }
 
@@ -161,11 +169,11 @@ const COMPACT_PREDICATE_DESCRIPTION = `${PREDICATE_KINDS}${PREDICATE_FIELD_GRAMM
  * description pass through unchanged. Predicate params are replaced wholesale — see above.
  */
 function leanZodShape(
-  shape: z.ZodRawShape,
+  shape: Record<string, z.ZodType>,
   advertised: ReadonlySet<string>,
   predicateAnchor?: string,
-): z.ZodRawShape {
-  const out: z.ZodRawShape = {};
+): Record<string, z.ZodType> {
+  const out: Record<string, z.ZodType> = {};
   // The navigation hint is said ONCE per turn, so it is anchored to one parameter — not one tool.
   // A tool can carry two predicate parameters (a canonical name plus a neighbouring tool's alias),
   // and anchoring per-tool spelled the hint out on both.
@@ -173,16 +181,16 @@ function leanZodShape(
   for (const [key, schema] of Object.entries(shape)) {
     if (isPredicateParam(schema)) {
       // Every tool keeps the kinds; only the navigation hint is anchored.
-      const compact = z
-        .record(z.unknown())
-        .describe(hintSpent ? PREDICATE_KINDS : COMPACT_PREDICATE_DESCRIPTION);
+      const compact = z.record(z.string(), z.unknown());
+      out[key] = (schema.isOptional() ? compact.optional() : compact).describe(
+        hintSpent ? PREDICATE_KINDS : COMPACT_PREDICATE_DESCRIPTION,
+      );
       hintSpent = true;
-      out[key] = schema.isOptional() ? compact.optional() : compact;
       continue;
     }
     // Shared boilerplate is documented once in the initialize instructions instead of on every
     // tool, every turn. `sessionId` alone was 2,076 bytes of identical text across 16 tools.
-    const shared = SHARED_PARAM_SHORT[key];
+    const shared = sharedParamShort(key, schema);
     if (shared !== undefined) {
       // `.describe` returns the same schema with new prose, so optionality carries over. Re-wrapping
       // in `.optional()` would nest one inside another and change the parameter's TYPE, which is a
@@ -192,7 +200,7 @@ function leanZodShape(
     }
     // Through the same rewrite as tool descriptions: a parameter that says "a ref from
     // reticle_snapshot" names a tool this surface does not have.
-    const desc = schema.description;
+    const desc = descriptionOf(schema);
     out[key] =
       'string' === typeof desc
         ? schema.describe(liveCallText(firstSentence(desc), advertised))
@@ -231,8 +239,9 @@ type ReticleRegisterTool = (
   name: string,
   config: {
     description: string;
-    inputSchema: z.ZodRawShape;
-    outputSchema?: z.ZodRawShape;
+    inputSchema: Record<string, z.ZodType>;
+    outputSchema?: Record<string, z.ZodType>;
+    annotations?: ToolAnnotations;
   },
   handler: (
     args: Record<string, unknown>,
@@ -354,7 +363,12 @@ export function advertisedConfig(
   tool: ToolDef,
   advertised: readonly ToolDef[],
   profile: ToolSurface,
-): { description: string; inputSchema: z.ZodRawShape; outputSchema?: z.ZodRawShape } {
+): {
+  description: string;
+  inputSchema: Record<string, z.ZodType>;
+  outputSchema?: Record<string, z.ZodType>;
+  annotations: ToolAnnotations;
+} {
   // Hybrid is the terse one. NOT `profile !== FULL`, which reads equivalent and is not: it also
   // trims `dynamic`, whose two meta-tools are the ONLY thing that profile advertises — so the
   // instructions for using them (`names:[…]` loads full params on demand) would be cut to a first
@@ -416,6 +430,7 @@ export function advertisedConfig(
         )
       : tool.inputSchema,
     ...(outputSchema !== undefined ? { outputSchema } : {}),
+    annotations: toolAnnotations(tool.name),
   };
 }
 
@@ -440,7 +455,9 @@ type InputValidator = (tool: unknown, args: unknown, toolName: string) => Promis
 
 /** Argument keys the tool never declared. Empty when the tool's shape is unknown to us. */
 function unknownKeys(args: unknown, allowed?: ReadonlySet<string>): string[] {
-  if (allowed === undefined || typeof args !== 'object' || null === args) return [];
+  if (allowed === undefined || typeof args !== 'object' || null === args) {
+    return [];
+  }
   return Object.keys(args as Record<string, unknown>).filter((key) => !allowed.has(key));
 }
 
@@ -515,10 +532,14 @@ export function installFriendlyArgErrors(
  * the predicate is not what broke.
  */
 function predicateMessage(args: unknown): string | undefined {
-  if (typeof args !== 'object' || null === args) return undefined;
+  if (typeof args !== 'object' || null === args) {
+    return undefined;
+  }
   const record = args as Record<string, unknown>;
   const predicate = record['predicate'] ?? record['until'];
-  if (predicate === undefined) return undefined;
+  if (predicate === undefined) {
+    return undefined;
+  }
   try {
     parsePredicate(predicate);
     return undefined;
@@ -569,7 +590,9 @@ function installUnadvertisedToolHelp(
     const help = name === undefined ? undefined : unadvertisedToolHelp(name, advertised, known);
     // A failed RESULT, not a JSON-RPC error: a client that reads only `result` rendered the error
     // as an empty success, and the agent believed `reticle_flow_save` had saved its flow.
-    if (help !== undefined) return { content: [{ type: 'text', text: help }], isError: true };
+    if (help !== undefined) {
+      return { content: [{ type: 'text', text: help }], isError: true };
+    }
     return original(request, extra);
   });
 }
@@ -594,11 +617,41 @@ function asCallOf(request: unknown, tool: string, action: string): unknown {
 
 /** The requested tool name, when the request has the shape we expect. */
 function toolNameOf(request: unknown): string | undefined {
-  if (typeof request !== 'object' || null === request) return undefined;
+  if (typeof request !== 'object' || null === request) {
+    return undefined;
+  }
   const params = (request as { params?: unknown }).params;
-  if (typeof params !== 'object' || null === params) return undefined;
+  if (typeof params !== 'object' || null === params) {
+    return undefined;
+  }
   const name = (params as { name?: unknown }).name;
   return 'string' === typeof name ? name : undefined;
+}
+
+/**
+ * The daemon's factory for one MCP server for each attach. A proxy's id is its agent identity, so a
+ * reconnect from the same proxy is the same owner and keeps its leases. An attach with no proxy id
+ * gets a new random id from `createMcpServer`.
+ *
+ * `instructions` is read for each attach, not once: a project that gets wired while the daemon is
+ * alive must stop being told to wire itself on the next agent that connects.
+ */
+export function mcpServerFactoryFor(
+  deps: ToolDeps,
+  profile: ToolSurface,
+  instructions: () => boolean | Omit<InstructionState, 'advertised'>,
+): (peerSkew?: string, proxyId?: string, agentSession?: string) => McpServer {
+  return (peerSkew, proxyId, agentSession) =>
+    createMcpServer(
+      {
+        ...deps,
+        ...(peerSkew === undefined ? {} : { peerSkew: connectionSkew(peerSkew) }),
+        ...(proxyId === undefined ? {} : { attachId: proxyId }),
+        ...(agentSession === undefined ? {} : { agentSession }),
+      },
+      profile,
+      instructions(),
+    );
 }
 
 /**
@@ -616,6 +669,37 @@ function toolNameOf(request: unknown): string | undefined {
  * covered the day it is added instead of the day somebody notices.
  */
 const FIRST_PARTY_TOOL_NAMES: ReadonlySet<string> = new Set(Object.values(ReticleTool));
+
+type ListOnlyRegister = (name: string, config: object, handler: () => { content: [] }) => void;
+
+/**
+ * The `tools/list` result this server serves on `surface`, built with no daemon and no deps. The
+ * proxy answers with it while its daemon starts. The same table, the same per-tool config and the
+ * same SDK conversion make it the same list; `proxy-cold-start.test.ts` holds the two equal.
+ */
+export async function staticToolCatalog(surface: ToolSurface): Promise<unknown[]> {
+  const [{ Client }, { InMemoryTransport }] = await Promise.all([
+    import('@modelcontextprotocol/sdk/client/index.js'),
+    import('@modelcontextprotocol/sdk/inMemory.js'),
+  ]);
+  const server = new McpServer(SERVER_INFO);
+  const register = server.registerTool.bind(server) as unknown as ListOnlyRegister;
+  const advertised = advertisedTools(surface);
+  for (const tool of advertised) {
+    // Never called: this server only lists.
+    register(tool.name, advertisedConfig(tool, advertised, surface), () => ({ content: [] }));
+  }
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client(SERVER_INFO);
+  await client.connect(clientTransport);
+  try {
+    return (await client.listTools()).tools;
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
 
 export function createMcpServer(
   rawDeps: ToolDeps,
@@ -650,6 +734,12 @@ export function createMcpServer(
    * store keeps it.
    */
   const deps = { snapshots: newSnapshotCache(), attachId: randomUUID(), ...rawDeps };
+  // A proxy that reconnects brings its own id as `attachId`, so this is the same owner coming back:
+  // take its leases out of their grace. A new random id owns no leases, so this does nothing.
+  deps.pool?.reattachOwner(deps.attachId);
+  if (deps.agentSession !== undefined) {
+    noteAgentSession(deps.attachId, deps.agentSession);
+  }
   const encoding = (process.env[ENCODING_ENV] ?? '').toLowerCase();
   // Which surface this daemon advertises. The 18-tool default and the 48-tool full surface are
   // different products from inside an agent's context, so outcomes are only comparable when the
@@ -678,7 +768,9 @@ export function createMcpServer(
    */
   server.server.oninitialized = () => {
     const info = server.server.getClientVersion();
-    if (info?.name === undefined) return;
+    if (info?.name === undefined) {
+      return;
+    }
     getSessionMetrics().recordClient(info.name, info.version);
     // So the HUD can say which agent is connected, and credit a note to the one that read it.
     noteAgentAttached(deps.attachId, info.name);
@@ -686,11 +778,13 @@ export function createMcpServer(
     // the first moment it can carry WHO. It used to fire from the SSE `connect()` resolution, which
     // happens before the handshake — so every connect row was anonymous, and the field meant to say
     // which agent client converts best was empty on every event ever sent.
-    void runAsAgent(deps.attachId, () => Promise.resolve(reportMcpConnected(info.name)));
+    void runAsAgent(deps.attachId, () =>
+      Promise.resolve(reportMcpConnected(info.name, deps.attachId)),
+    );
   };
   server.server.onclose = () => {
     noteAgentDetached(deps.attachId);
-    // A reconnect is a new owner and never takes these leases back; start their short grace.
+    // Start the leases' short grace. A reconnect from the same proxy takes them back (see above).
     deps.pool?.detachOwner(deps.attachId);
   };
   // Which agent is on the other end, for a feedback report. Registered as a lazy hook rather than
@@ -701,7 +795,9 @@ export function createMcpServer(
     // Still records, because a client that skipped the handshake path above (a replayed initialize
     // through the proxy, a transport that reconnects) is a client we would otherwise lose entirely.
     // `recordClient` is idempotent per name.
-    if (info?.name !== undefined) getSessionMetrics().recordClient(info.name, info.version);
+    if (info?.name !== undefined) {
+      getSessionMetrics().recordClient(info.name, info.version);
+    }
     return info === undefined ? undefined : { name: info.name, version: info.version };
   });
   // Cast once to our bridge type so every per-tool call site is typed without `any`.

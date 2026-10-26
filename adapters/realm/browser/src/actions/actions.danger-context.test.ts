@@ -23,7 +23,9 @@ import { refs } from '@/dom/addressing/refs.js';
 
 const refTo = (selector: string): string => {
   const el = document.querySelector(selector);
-  if (!(el instanceof HTMLElement)) throw new Error(`no element for ${selector}`);
+  if (!(el instanceof HTMLElement)) {
+    throw new Error(`no element for ${selector}`);
+  }
   return refs.refFor(el);
 };
 
@@ -36,7 +38,9 @@ describe('a text entry is classified by its label, never by its content', () => 
     document.body.innerHTML =
       '<label for="q">What are you trying to find out?</label><textarea id="q"></textarea>';
     const field = document.querySelector('textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('no field');
+    if (!(field instanceof HTMLTextAreaElement)) {
+      throw new Error('no field');
+    }
     field.value = 'Determine the pressure drop of water through a 3-way pipe junction';
     await expect(executeAction(refTo('#q'), 'press', { text: 'Enter' })).resolves.toBeDefined();
   });
@@ -161,10 +165,14 @@ describe('submitControlFor across realms', () => {
     const iframe = document.createElement('iframe');
     document.body.appendChild(iframe);
     const iframeDoc = iframe.contentDocument;
-    if (!iframeDoc) throw new Error('no iframe document');
+    if (!iframeDoc) {
+      throw new Error('no iframe document');
+    }
     iframeDoc.body.innerHTML = `<form><input type="text" id="q"><button type="submit">${DESTRUCTIVE_SUBMIT_LABEL}</button></form>`;
     const field = iframeDoc.querySelector('#q');
-    if (!field) throw new Error('no field');
+    if (!field) {
+      throw new Error('no field');
+    }
     return field;
   };
 
@@ -174,7 +182,9 @@ describe('submitControlFor across realms', () => {
     // Enter destructive-guard would never see the submit button.
     const field = iframeField();
     const button = field.ownerDocument.querySelector('button');
-    if (!button) throw new Error('no button');
+    if (!button) {
+      throw new Error('no button');
+    }
     // Documents the old failure: the ambient realm cannot see the iframe button.
     expect(button instanceof HTMLElement).toBe(false);
     expect(submitControlFor(field as HTMLElement)).toBe(button);
@@ -215,8 +225,9 @@ describe('a link is judged by where it goes, not by the text it shows', () => {
       '<a id="p" href="/billing/payments">Orders &amp; invoices</a>' +
       '<a id="q" href="/billing/payment">Orders &amp; invoices</a>' +
       '<a id="r" href="/shop/buy">Shop</a>';
-    for (const id of ['#p', '#q', '#r'])
+    for (const id of ['#p', '#q', '#r']) {
       await expect(executeAction(refTo(id), 'click')).resolves.toBeDefined();
+    }
   });
 
   it('still blocks a link to a payment provider, and a Pay button', async () => {
@@ -244,10 +255,11 @@ describe('what a Harness command may press', () => {
       '<button id="i">Invite</button><button id="s">Send message</button>' +
       '<button id="r">Remove member</button>';
     setOutwardPolicy([]);
-    for (const id of ['#i', '#s', '#r'])
+    for (const id of ['#i', '#s', '#r']) {
       await expect(executeAction(refTo(id), 'click', { confirmDangerous: true })).rejects.toThrow(
         /not done \(outward action\)/,
       );
+    }
   });
 
   it('presses the one the journey asked for, and an ordinary control always', async () => {
@@ -265,8 +277,9 @@ describe('what a Harness command may press', () => {
       '<button id="t">Start free trial</button><button id="u">Upgrade</button>' +
       '<button id="s">Subscribe</button>';
     setOutwardPolicy([]);
-    for (const id of ['#t', '#u', '#s'])
+    for (const id of ['#t', '#u', '#s']) {
       await expect(executeAction(refTo(id), 'click')).resolves.toBeDefined();
+    }
   });
 
   it('refuses to type into a card field or follow a link to a payment provider', async () => {
@@ -275,10 +288,11 @@ describe('what a Harness command may press', () => {
       '<input id="e" name="email" autocomplete="email">' +
       '<a id="l" href="https://checkout.stripe.com/c/pay/cs_1">Continue</a>';
     setOutwardPolicy([]);
-    for (const id of ['#n', '#c'])
+    for (const id of ['#n', '#c']) {
       await expect(executeAction(refTo(id), 'fill', { value: '4242' })).rejects.toThrow(
         /would need to pay/,
       );
+    }
     await expect(executeAction(refTo('#l'), 'click')).rejects.toThrow(/would need to pay/);
     await expect(executeAction(refTo('#e'), 'fill', { value: 'a@b.test' })).resolves.toBeDefined();
   });
@@ -314,5 +328,100 @@ describe('select by what a person reads', () => {
     await expect(executeAction(refTo('#w'), 'select', { value: 'Nope' })).rejects.toThrow(
       /no <option>/,
     );
+  });
+});
+
+/**
+ * Half B of #894: a filename-like token never reads as an action verb.
+ *
+ * The guard read a control's accessible name plus its whole textContent, so a media clip tile
+ * whose filename contained "remove" was blocked as destructive, and so was a "Create preview"
+ * button whose name carried that filename. Filename tokens are stripped before the text is
+ * classified; everything else still counts, including the content of list items and table rows.
+ */
+describe('a filename-like token never reads as an action verb', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('does not block picking a material whose filename contains a destructive word', async () => {
+    // The maintainer's repro: <div role="option">photo-remove-background.webm</div> then click.
+    document.body.innerHTML =
+      '<div role="option" data-testid="clip">photo-remove-background.webm</div>';
+    await expect(executeAction(refTo('[data-testid="clip"]'), 'click')).resolves.toBeDefined();
+  });
+
+  it('does not block a treeitem whose descendant content mentions a destructive word', async () => {
+    document.body.innerHTML =
+      '<div role="treeitem" aria-label="Clip details">photo-remove-background.webm</div>';
+    await expect(executeAction(refTo('[role="treeitem"]'), 'click')).resolves.toBeDefined();
+  });
+
+  it('does not block a listbox row whose text is a destructive-looking filename', async () => {
+    document.body.innerHTML = '<div role="row">delete-me.txt</div>';
+    await expect(executeAction(refTo('[role="row"]'), 'click')).resolves.toBeDefined();
+  });
+
+  it('does not block a button whose name carries a filename with a destructive word', async () => {
+    // "Create preview" plus the clip filename: the verb is in the filename, not in the act.
+    document.body.innerHTML =
+      '<button id="p" aria-label="Create preview photo-remove-background.webm">Create preview</button>';
+    await expect(executeAction(refTo('#p'), 'click')).resolves.toBeDefined();
+  });
+
+  it('still blocks a selectable item the author labelled as destructive', async () => {
+    document.body.innerHTML =
+      '<div role="treeitem" aria-label="Remove clip">photo-remove-background.webm</div>';
+    await expect(executeAction(refTo('[role="treeitem"]'), 'click')).rejects.toThrow(
+      /confirmDangerous/,
+    );
+  });
+
+  it('still blocks a button whose own name is destructive', async () => {
+    document.body.innerHTML = '<button id="d">Remove clip</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
+  });
+
+  it('still blocks when the destructive word stands alone next to a filename', async () => {
+    document.body.innerHTML = '<button id="d">Remove photo-remove-background.webm</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
+  });
+
+  it('still blocks a button whose hyphenated label is a destructive slug', async () => {
+    // Review case on #1620: delete-account is a label, not a filename, so nothing is stripped.
+    document.body.innerHTML = '<button id="d">delete-account</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
+  });
+
+  it('still blocks a button whose hyphenated label starts with a destructive word', async () => {
+    document.body.innerHTML = '<button id="d">Force-delete</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
+  });
+
+  it('still blocks a button whose aria-label joins a destructive word with an underscore', async () => {
+    document.body.innerHTML = '<button id="d" aria-label="delete_repo">X</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
+  });
+
+  it('still blocks a list item whose content is destructive', async () => {
+    // Review case on #1620: getRole reports `listitem` with no role attribute, so a
+    // selection-role branch would judge this by aria-label/title/href alone and let it through.
+    document.body.innerHTML = '<ul><li data-testid="m">Delete project</li></ul>';
+    await expect(executeAction(refTo('[data-testid="m"]'), 'click')).rejects.toThrow(
+      /confirmDangerous/,
+    );
+  });
+
+  it('still blocks a table row whose content is destructive', async () => {
+    document.body.innerHTML = '<table><tr data-testid="r"><td>Delete</td></tr></table>';
+    await expect(executeAction(refTo('[data-testid="r"]'), 'click')).rejects.toThrow(
+      /confirmDangerous/,
+    );
+  });
+
+  it('still blocks a verb glued to a filename with a colon', async () => {
+    // Review case on #1620: `Delete:report.pdf` — only `report.pdf` is a filename token.
+    document.body.innerHTML = '<button id="d">Delete:report.pdf</button>';
+    await expect(executeAction(refTo('#d'), 'click')).rejects.toThrow(/confirmDangerous/);
   });
 });

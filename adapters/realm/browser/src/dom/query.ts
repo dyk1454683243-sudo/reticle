@@ -1,7 +1,6 @@
 import {
   ALTERNATIVE_TESTID_ATTRS,
   DEFAULT_TESTID_ATTR,
-  DATA_RETICLE_SOURCE_ATTR,
   ElementState,
   QueryBy,
   REDACTED_VALUE,
@@ -13,96 +12,33 @@ import {
   type QueryResult,
   TRANSPORT_LIMITS,
 } from '@reticlehq/core';
-import { isActionTarget, isElement, isFrame, isInput, isSelect, isTextArea } from './realm.js';
+import { isActionTarget, isElement, isFrame } from './realm.js';
 import { capturedRootOf } from './shadow-registry.js';
+import { getAccessibleName, getRole, describe, getStates } from './a11y.js';
 import {
-  getAccessibleName,
-  getRole,
-  describe,
-  getStates,
   isHiddenByAriaOnly,
   isInViewport,
   isRenderedOutsideAriaHidden,
   isVisible,
-} from './a11y.js';
-import { isIgnored, isReticleOverlay, isWordsIgnored } from './dom-ignore.js';
+} from './visibility.js';
+import { dialogCovering, isIgnored, isReticleOverlay, isWordsIgnored } from './dom-ignore.js';
 import { isSensitiveKey } from '@/security/serialization.js';
 import { declaredTestids } from '@/registry/capabilities.js';
-import { identifyComponent } from '@/registry/stores/adapters.js';
 import { refs } from './addressing/refs.js';
 import { getTestIdAttr, readTestId, testIdSelector } from './addressing/testid-attr.js';
 import { stableSelectorFor } from './stable-selector.js';
+import {
+  fuzzyVisibleText,
+  normaliseVisibleText,
+  comparableText,
+  foldTypography,
+  textMatches,
+  unreadableMatch,
+} from './text-match.js';
+import { pageRoute } from '@/security/page-location.js';
+import { elementsUnder, findIn, isNonRendered, queryByRoleAndName } from './query-finders.js';
 
-const SOURCE_ATTR = DATA_RETICLE_SOURCE_ATTR;
 const MAX_PRESENT_TESTIDS = 12;
-/** Bound the fiber-walk fallback so a component-name query can't scan an unbounded DOM. */
-const MAX_COMPONENT_CANDIDATES = 2000;
-/** Likely-actionable elements considered when resolving a component anchor without a source stamp. */
-/** A function, not a constant: the test-id attribute is configured at connect, after this module loads. */
-const componentCandidateSelector = (): string =>
-  `[${SOURCE_ATTR}], ${testIdSelector()}, button, a, input, select, textarea, [role]`;
-
-/**
- * Every candidate a semantic locator may match: the container ITSELF first, then its descendants.
- *
- * The container's own text, role or name was matched by every engine this replaces - a scoped
- * `{ text: "Saved" }` against `<div id="status">Saved</div>` found #status itself - so dropping
- * the root here would turn exactly those scoped queries into silent zero-match answers: the worst
- * failure mode, indistinguishable from the element being absent. `self: true` stays the way to
- * reach an UNLABELLED root (it skips the predicate entirely); this keeps a root that DOES satisfy
- * the predicate findable without a second spelling.
- */
-function elementsUnder(container: HTMLElement): HTMLElement[] {
-  // Embedded roots include ShadowRoots, which are DocumentFragments: they have no attributes or
-  // tag to match on, so only a true Element root joins the candidates.
-  const self = Node.ELEMENT_NODE === container.nodeType ? [container] : [];
-  return [...self, ...Array.from(container.querySelectorAll<HTMLElement>('*'))];
-}
-
-/**
- * Match user-visible prose the way the public query API has always promised: trim and collapse
- * whitespace, compare canonically equivalent Unicode in NFC, and keep fuzzy text queries
- * case-insensitive. Attribute identifiers such as testid stay exact and do not pass through here.
- */
-function normaliseVisibleText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().normalize('NFC');
-}
-
-function fuzzyVisibleText(actual: string, expected: string): boolean {
-  return normaliseVisibleText(actual)
-    .toLowerCase()
-    .includes(normaliseVisibleText(expected).toLowerCase());
-}
-
-/** The text rule a query asked for: case-exact when it is a check, forgiving when it is a search. */
-function textMatches(actual: string, query: ElementQuery, expected: string): boolean {
-  if (true !== query.matchCase) return fuzzyVisibleText(actual, expected);
-  return normaliseVisibleText(actual).includes(normaliseVisibleText(expected));
-}
-
-function exactVisibleText(actual: string, expected: string): boolean {
-  return normaliseVisibleText(actual) === normaliseVisibleText(expected);
-}
-
-/** Tags whose text content is never rendered, however visible the element computes. */
-const NON_RENDERED_TAGS: readonly string[] = ['script', 'style', 'template', 'noscript'];
-
-function isNonRendered(el: Element): boolean {
-  return NON_RENDERED_TAGS.includes(el.tagName.toLowerCase());
-}
-
-function directText(el: Element): string {
-  if (isInput(el)) {
-    const type = el.type.toLowerCase();
-    if ('submit' === type || 'button' === type || 'reset' === type) return el.value;
-  }
-  if (isNonRendered(el)) return '';
-  return Array.from(el.childNodes)
-    .filter((node) => Node.TEXT_NODE === node.nodeType)
-    .map((node) => node.textContent ?? '')
-    .join('');
-}
-
 /**
  * The text a user can actually SEE under `el`, in document order.
  *
@@ -121,13 +57,16 @@ function directText(el: Element): string {
  * leaves ours out, which pointing an agent at "Pause" or "Export" did not.
  */
 function visibleTextOf(el: Element, memo: Map<Element, boolean>): string {
-  if (isNonRendered(el) || isWordsIgnored(el)) return '';
+  if (isNonRendered(el) || isWordsIgnored(el)) {
+    return '';
+  }
   const visible = isVisible(el, memo);
   const apart = laysOutApart(el);
   let text = '';
   for (const node of Array.from(el.childNodes)) {
-    if (Node.TEXT_NODE === node.nodeType && visible) text += node.textContent ?? '';
-    else if (isElement(node)) {
+    if (Node.TEXT_NODE === node.nodeType && visible) {
+      text += node.textContent ?? '';
+    } else if (isElement(node)) {
       // A child the layout sets apart reads as a separate word: "found by" and "CI" in two flex
       // items with no space node between them read "found byCI", which no phrase check can match.
       const own = visibleTextOf(node, memo);
@@ -150,28 +89,6 @@ function ownBox(el: Element): boolean {
 }
 
 /**
- * Elements whose accessible name comes from author-supplied naming rather than free subtree
- * content - the set `by: label` addresses.
- *
- * Form controls plus anything explicitly named with aria-label/aria-labelledby covers the common
- * case. `button`, `meter`, `output` and `progress` are included because their names arrive on
- * attributes (`value`) or from their caption, which is precisely what a label query is looking
- * for; leaving them out would silently drop buttons from label searches.
- */
-function semanticNameTarget(el: Element): boolean {
-  if (isInput(el) || isTextArea(el) || isSelect(el)) return true;
-  const tag = el.tagName.toLowerCase();
-  return (
-    'button' === tag ||
-    'meter' === tag ||
-    'output' === tag ||
-    'progress' === tag ||
-    el.hasAttribute('aria-label') ||
-    el.hasAttribute('aria-labelledby')
-  );
-}
-
-/**
  * Resolve a scope to its container. A container of `null` means a scope was GIVEN but resolved to
  * nothing (unmounted, or a selector that matches no element) - the caller must NOT fall back to the
  * whole page, or a scoped query silently widens into a phantom match. `scope === undefined` (no scope)
@@ -181,253 +98,27 @@ function resolveContainer(scope: string | undefined): {
   container: HTMLElement | null;
   scopeMissing: boolean;
 } {
-  if (scope === undefined) return { container: document.body, scopeMissing: false };
+  if (scope === undefined) {
+    return { container: document.body, scopeMissing: false };
+  }
   // An SVG element is a scope too. `look` hands out refs for SVG links, and the action layer drives
   // them, so refusing one here reported a scope the page plainly has as MISSING - a floor plan whose
   // rooms are `<a href>` inside an `<svg>` could be clicked but never scoped to (#1122). The locators
   // below read only what Element has (attributes, children, text), which is also why `elementsUnder`
   // already walks SVG descendants.
   const byRef = refs.resolve(scope);
-  if (isActionTarget(byRef)) return { container: byRef, scopeMissing: false };
+  if (isActionTarget(byRef)) {
+    return { container: byRef, scopeMissing: false };
+  }
   try {
     const found = document.querySelector(scope);
-    if (isActionTarget(found)) return { container: found, scopeMissing: false };
+    if (isActionTarget(found)) {
+      return { container: found, scopeMissing: false };
+    }
   } catch {
     // invalid selector - treat as a missing scope, never a whole-page search
   }
   return { container: null, scopeMissing: true };
-}
-
-/**
- * Resolve an element by its SOURCE location - the precise, granular auto-anchor. The babel plugin
- * stamps `data-reticle-source="file:line:column"` on host elements, so a line-level starts-with match
- * pins the exact JSX element with a single fast attribute selector (no fiber walk). Column is
- * ignored so a small column drift doesn't unbind the anchor.
- */
-function findBySource(
-  container: HTMLElement,
-  source: { file: string; line: number },
-): HTMLElement[] {
-  const prefix = `${source.file}:${source.line}:`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  try {
-    return Array.from(container.querySelectorAll<HTMLElement>(`[${SOURCE_ATTR}^="${prefix}"]`));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Resolve by component display name when no source stamp is available: scan a bounded set of
- * likely-actionable elements and keep those whose NEAREST enclosing component (via the registered
- * framework adapter) matches. Coarser than source (one component renders many hosts) - used as a
- * fallback / for frameworks without a source plugin.
- */
-function findByComponentName(container: HTMLElement, component: string): HTMLElement[] {
-  const out: HTMLElement[] = [];
-  let scanned = 0;
-  for (const el of Array.from(
-    container.querySelectorAll<HTMLElement>(componentCandidateSelector()),
-  )) {
-    if (scanned >= MAX_COMPONENT_CANDIDATES) break;
-    scanned += 1;
-    const info = identifyComponent(el);
-    if (info !== null && info.componentStack[0] === component) out.push(el);
-  }
-  return out;
-}
-
-/** Auto-anchor resolution: source (precise) first, then component name (coarse fallback). */
-function findByComponent(container: HTMLElement, query: ElementQuery): HTMLElement[] {
-  if (query.source !== undefined) {
-    const bySource = findBySource(container, query.source);
-    if (bySource.length > 0) return bySource;
-  }
-  if (query.component !== undefined && query.component.length > 0) {
-    return findByComponentName(container, query.component);
-  }
-  return [];
-}
-
-/**
- * Does an element whose computed role is `actual` satisfy a query for `queried`?
- *
- * `searchbox` is an ARIA sub-role of `textbox`. A standard search input computes as `searchbox`
- * (per HTML-AAM), which matches `{ role: "searchbox" }`. A `{ role: "textbox" }` query must
- * keep matching it as well, so existing flows and recorded steps using `textbox` continue to match.
- */
-function matchesRole(actual: string, queried: string): boolean {
-  if (actual === queried) return true;
-  if ('textbox' === queried && 'searchbox' === actual) return true;
-  return false;
-}
-
-const OPTION_ROLE = 'option';
-const HTML_OPTION_TAG = 'option';
-const HTML_SELECT_TAG = 'select';
-/**
- * The visually-hidden bubble. A control a person can use is larger than a 1×1 clip; that size is
- * the convention libraries use to keep a native select out of the page.
- */
-const VISUALLY_HIDDEN_MAX_PX = 1;
-
-/** A native `<option>` whose owning `<select>` is not a control a person can click. */
-export function isHiddenNativeOption(el: HTMLElement): boolean {
-  if (HTML_OPTION_TAG !== el.localName) return false;
-  const select = el.closest(HTML_SELECT_TAG);
-  if (!isSelect(select)) return false;
-  if (!isVisible(select)) return true;
-  return isVisuallyHiddenBox(select);
-}
-
-/**
- * The bubble's own shape: a measured box no larger than 1×1. A 0×0 box is not enough, because a
- * closed `<select>` with no layout yet (and every node in jsdom) measures 0×0 and is still the
- * control a person uses, so its options keep counting for role queries.
- */
-function isVisuallyHiddenBox(select: HTMLSelectElement): boolean {
-  const box = select.getBoundingClientRect();
-  return (
-    box.width > 0 &&
-    box.height > 0 &&
-    box.width <= VISUALLY_HIDDEN_MAX_PX &&
-    box.height <= VISUALLY_HIDDEN_MAX_PX
-  );
-}
-
-/**
- * Prefer a visible actionable option over a hidden native duplicate.
- *
- * Radix (and the same shape elsewhere) keeps a native `<option>` inside a 1×1 clipped `<select>`
- * so a form can submit, and paints the choice a person clicks as `role="option"` in a portal.
- * Both compute the same accessible name. The native node is first in the document, so a role+name
- * anchor resolved to it, replay dispatched a click, and the selected value never moved — the
- * handler lives on the portal node. The visibility walk does not catch this: the bubble select is
- * not `display:none` or `aria-hidden`, and an `<option>` has no layout box of its own, so both
- * come back `visible`.
- *
- * Drop every native `<option>` whose `<select>` is not a control a person can use. When a portal
- * duplicate exists it is the one replay should target; when the dropdown is closed and only the
- * hidden native node remains, resolving or clicking it still cannot change the selection, so the
- * match is refused rather than reported as success. A real `<select>` the user can see is unchanged.
- *
- * Returns the original array when nothing is dropped, so a unique match keeps its identity.
- */
-function preferVisibleActionableOption(role: string, matches: HTMLElement[]): HTMLElement[] {
-  if (OPTION_ROLE !== role) return matches;
-  const kept = matches.filter((el) => !isHiddenNativeOption(el));
-  return kept.length === matches.length ? matches : kept;
-}
-
-/**
- * Role + name, matched with the same local accessibility engine used to describe results.
- *
- * This intentionally makes Reticle's reported role and name the source of truth. If an element is
- * described as `textbox "Search User"`, the resolver must accept that exact pair, not a different
- * role or name from a second library.
- */
-function queryByRoleAndName(
-  container: HTMLElement,
-  role: string,
-  name: string | undefined,
-): HTMLElement[] {
-  const matched = elementsUnder(container).filter(
-    (el) =>
-      matchesRole(getRole(el), role) &&
-      (name === undefined || exactVisibleText(getAccessibleName(el), name)),
-  );
-  return preferVisibleActionableOption(role, matched);
-}
-
-function queryByText(container: HTMLElement, value: string, query: ElementQuery): HTMLElement[] {
-  return elementsUnder(container).filter((el) => textMatches(directText(el), query, value));
-}
-
-function queryByLabel(container: HTMLElement, value: string): HTMLElement[] {
-  const expected = normaliseVisibleText(value).toLowerCase();
-  const exact: HTMLElement[] = [];
-  const fuzzy: HTMLElement[] = [];
-
-  for (const el of elementsUnder(container)) {
-    if (!semanticNameTarget(el)) continue;
-    const name = normaliseVisibleText(getAccessibleName(el)).toLowerCase();
-    if (!name.includes(expected)) continue;
-    (name === expected ? exact : fuzzy).push(el);
-  }
-
-  return exact.length > 0 ? exact : fuzzy;
-}
-
-function queryByPlaceholder(container: HTMLElement, value: string): HTMLElement[] {
-  return elementsUnder(container).filter((el) => {
-    const placeholder = el.getAttribute('placeholder');
-    return placeholder !== null && fuzzyVisibleText(placeholder, value);
-  });
-}
-
-function queryByTestId(container: HTMLElement, value: string): HTMLElement[] {
-  return elementsUnder(container).filter((el) => readTestId(el) === value);
-}
-
-function queryByAlt(container: HTMLElement, value: string): HTMLElement[] {
-  return elementsUnder(container).filter((el) => {
-    const alt = el.getAttribute('alt');
-    return alt !== null && fuzzyVisibleText(alt, value);
-  });
-}
-
-/** Run the appropriate local query against ONE root, light DOM or a shadow root. */
-function findIn(container: HTMLElement, query: ElementQuery): HTMLElement[] {
-  const by = query.by;
-  const value = query.value;
-
-  // Explicit `by`+`value` form.
-  if (by !== undefined && value !== undefined) {
-    switch (by) {
-      case QueryBy.ROLE:
-        return queryByRoleAndName(container, value, query.name);
-      case QueryBy.TEXT:
-        return queryByText(container, value, query);
-      case QueryBy.LABEL:
-        return queryByLabel(container, value);
-      case QueryBy.PLACEHOLDER:
-        return queryByPlaceholder(container, value);
-      case QueryBy.TESTID:
-        return queryByTestId(container, value);
-      case QueryBy.ALT:
-        return queryByAlt(container, value);
-      case QueryBy.COMPONENT:
-        // value is the component name;.source (if present) still takes precedence inside.
-        return findByComponent(container, { ...query, component: query.component ?? value });
-      default:
-        // THROW, never `return []`. An unsupported strategy answering "no matches" is
-        // indistinguishable from the element genuinely being absent, so `by:'css'` - the first thing
-        // anyone arriving from Playwright reaches for - reported a page with a <body> as empty. The
-        // server now rejects unknown strategies at the schema; this is the same guarantee for every
-        // other path in (replay, reticle_run, an internal caller), because a false negative invented
-        // by the tool is the exact failure this product exists to prevent.
-        throw new Error(
-          `unsupported query strategy '${String(by)}' - use one of: ${Object.values(QueryBy).join(', ')}`,
-        );
-    }
-  }
-
-  // Auto-anchor (component / source) - checked before the role/text fields so a query carrying
-  // both a component anchor and an incidental role resolves by the more durable anchor.
-  if (query.component !== undefined || query.source !== undefined) {
-    return findByComponent(container, query);
-  }
-
-  // Structured form (role+name, or any single field). Same round-trip guarantee as the by+value
-  // spelling above - the two forms must not disagree about what is findable.
-  if (query.role !== undefined) {
-    return queryByRoleAndName(container, query.role, query.name);
-  }
-  if (query.text !== undefined) return queryByText(container, query.text, query);
-  if (query.label !== undefined) return queryByLabel(container, query.label);
-  if (query.placeholder !== undefined) return queryByPlaceholder(container, query.placeholder);
-  if (query.testid !== undefined) return queryByTestId(container, query.testid);
-  if (query.alt !== undefined) return queryByAlt(container, query.alt);
-  return [];
 }
 
 /**
@@ -475,10 +166,16 @@ function embeddedRootsUnder(root: HTMLElement): HTMLElement[] {
         walk(shadow, depth); // nested web components
         continue;
       }
-      if (depth >= FRAME_DEPTH_MAX) continue;
-      if (!isFrame(el)) continue;
+      if (depth >= FRAME_DEPTH_MAX) {
+        continue;
+      }
+      if (!isFrame(el)) {
+        continue;
+      }
       const body = readableFrameBody(el);
-      if (null === body) continue; // cross-origin - declared, not searched
+      if (null === body) {
+        continue;
+      } // cross-origin - declared, not searched
       found.push(body);
       walk(body, depth + 1);
     }
@@ -513,7 +210,9 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
   const { container, scopeMissing } = resolveContainer(query.scope);
   // A given-but-missing scope searches NOTHING - never the whole page. The empty result plus the
   // scopeMissing flag is what keeps "gone scope" distinct from "absent element".
-  if (null === container) return { candidates: [], scopeMissing: true };
+  if (null === container) {
+    return { candidates: [], scopeMissing: true };
+  }
   // `self: true` asks for the container ITSELF, which every other path excludes by construction.
   // A layout element with no role, name, testid or own text is unreachable by any semantic locator,
   // and it is routinely the element carrying the handler - "click the empty space in this row" is a
@@ -522,7 +221,9 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
   // ordinary text query can match. Requires a scope: without one there is no root to return, and
   // answering `document.body` would be a wrong answer wearing the shape of one.
   if (true === query.self) {
-    if (query.scope === undefined) return { candidates: [], scopeMissing };
+    if (query.scope === undefined) {
+      return { candidates: [], scopeMissing };
+    }
     // The SAME visible-text rule the splitText hint uses, and it has to be: this path is the retry
     // that hint suggests. Read through `textContent`, the two agreed with each other and disagreed
     // with the page - a scope whose script payload or hidden subtree still held the string came
@@ -543,7 +244,9 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
   const ignored = wantedTextOf(query) === undefined ? isIgnored : isWordsIgnored;
   const collect = (els: HTMLElement[]): void => {
     for (const el of els) {
-      if (seen.has(el)) continue; // reachable from both host and root - count once
+      if (seen.has(el)) {
+        continue;
+      } // reachable from both host and root - count once
       // Reticle's OWN UI is not part of the app under test. `snapshot` has always excluded it; query
       // did not, so the presenter panel and the annotator answered `by: role` like app controls -
       // on a production-sized dashboard, 7 of the 40 buttons an agent could see were ours
@@ -551,13 +254,17 @@ function findCandidates(query: ElementQuery): { candidates: HTMLElement[]; scope
       // share a NAME with a real control on that page, so an agent resolving "Export" could drive the
       // observer instead of the app and then reason about the result. Filtered here, at the one
       // collection point, so every entry path (by role/text/testid, shadow roots, scoped) is covered.
-      if (ignored(el)) continue;
+      if (ignored(el)) {
+        continue;
+      }
       seen.add(el);
       out.push(el);
     }
   };
   collect(findIn(container, query));
-  for (const embedded of embeddedRootsUnder(container)) collect(findIn(embedded, query));
+  for (const embedded of embeddedRootsUnder(container)) {
+    collect(findIn(embedded, query));
+  }
   return { candidates: out, scopeMissing };
 }
 
@@ -577,7 +284,9 @@ function projectAttrs(el: Element, keys: readonly string[]): Record<string, stri
   const out: Record<string, string> = {};
   for (const key of keys.slice(0, ATTR_KEYS_MAX)) {
     const raw = el.getAttribute(key);
-    if (null === raw) continue;
+    if (null === raw) {
+      continue;
+    }
     out[key] = isSensitiveKey(key) ? REDACTED_VALUE : raw.slice(0, ATTR_VALUE_MAX);
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -587,7 +296,9 @@ function inState(el: Element, state: ElementState, memo?: Map<Element, boolean>)
   // inViewport is computed on demand rather than listed in getStates, so it stays assertable without
   // adding a state to every element in every snapshot (it would bloat the wire and churn every
   // describe). The predicate path is the only consumer that needs it. (#398)
-  if (ElementState.IN_VIEWPORT === state) return isInViewport(el, memo);
+  if (ElementState.IN_VIEWPORT === state) {
+    return isInViewport(el, memo);
+  }
   return getStates(el, isVisible(el, memo)).includes(state);
 }
 
@@ -655,15 +366,21 @@ export function matchQuery(
     ) {
       base = { ...base, states: [...base.states, ElementState.IN_VIEWPORT] };
     }
-    if (attrs === undefined || 0 === attrs.length) return base;
+    if (attrs === undefined || 0 === attrs.length) {
+      return base;
+    }
     const projected = projectAttrs(el, attrs);
     return projected === undefined ? base : { ...base, attrs: projected };
   });
+  const covered = dialogCovering(filtered);
+  const unreadable = wantedTextOf(query) === undefined ? undefined : unreadableMatch(described);
   return {
     matched: filtered.length > 0,
     count: filtered.length,
     elements: descriptors,
     ...(scopeMissing ? { scopeMissing: true } : {}),
+    ...(covered === undefined ? {} : { coveredBy: covered }),
+    ...(unreadable === undefined ? {} : { unreadable }),
     // On a MISS, carry the same diagnosis `runQuery` has always returned. MATCH is the command every
     // PREDICATE uses, so without this a failed assertion was a dead end ("no element matched") while
     // the identical failure through reticle_query listed the testids that ARE present. Computed only
@@ -676,7 +393,9 @@ export function matchQuery(
  * not a human-readable name. Undefined when unset or nothing resolves. */
 function resolveLabelledBy(el: Element): string | undefined {
   const ids = el.getAttribute('aria-labelledby');
-  if (null === ids) return undefined;
+  if (null === ids) {
+    return undefined;
+  }
   const text = ids
     .split(/\s+/)
     .map((id) =>
@@ -716,7 +435,9 @@ function buildPresentRegions(query: ElementQuery): PresentRegion[] {
     for (const el of containers) {
       // Reticle's HUD is not the app's modal layer — listing it here sent agents to dismiss a panel
       // that was never the problem (#783).
-      if (isReticleOverlay(el)) continue;
+      if (isReticleOverlay(el)) {
+        continue;
+      }
       const name =
         el.getAttribute('aria-label') ??
         resolveLabelledBy(el) ?? // aria-labelledby is an element ID - resolve it to the referenced TEXT
@@ -725,7 +446,9 @@ function buildPresentRegions(query: ElementQuery): PresentRegion[] {
       const children = el.querySelectorAll('[role]');
       const sample: string[] = [];
       for (const child of Array.from(children)) {
-        if (sample.length >= 3) break;
+        if (sample.length >= 3) {
+          break;
+        }
         const childRole = child.getAttribute('role');
         const childName =
           child.getAttribute('aria-label') ??
@@ -737,9 +460,13 @@ function buildPresentRegions(query: ElementQuery): PresentRegion[] {
         }
       }
       const region: PresentRegion = { role, childCount: children.length, sample };
-      if (name !== undefined && name.length > 0) region.name = name;
+      if (name !== undefined && name.length > 0) {
+        region.name = name;
+      }
       regions.push(region);
-      if (regions.length >= 10) return regions;
+      if (regions.length >= 10) {
+        return regions;
+      }
     }
   }
   return regions;
@@ -774,11 +501,17 @@ function splitTextOwner(
   // note above for why a cache that outlives one pass is unsound here.
   const memo = new Map<Element, boolean>();
   for (const el of elementsUnder(container)) {
-    if (isIgnored(el)) continue; // never point an agent at Reticle's own UI
+    if (isIgnored(el)) {
+      continue;
+    } // never point an agent at Reticle's own UI
     // The query's own case rule: a case-exact check that missed only on case is not "split".
-    if (!textMatches(visibleTextOf(el, memo), query, wanted)) continue;
+    if (!textMatches(visibleTextOf(el, memo), query, wanted)) {
+      continue;
+    }
     let depth = 0;
-    for (let parent = el.parentElement; parent !== null; parent = parent.parentElement) depth++;
+    for (let parent = el.parentElement; parent !== null; parent = parent.parentElement) {
+      depth++;
+    }
     if (depth > bestDepth) {
       best = el;
       bestDepth = depth;
@@ -789,14 +522,20 @@ function splitTextOwner(
 
 /** The text as the page shows it, when it differs from `wanted` only by case. */
 function caseOnlyMatch(container: HTMLElement, wanted: string): string | undefined {
-  const target = normaliseVisibleText(wanted).toLowerCase();
-  if (0 === target.length) return undefined;
+  const target = comparableText(wanted).toLowerCase();
+  if (0 === target.length) {
+    return undefined;
+  }
   const memo = new Map<Element, boolean>();
   for (const el of elementsUnder(container)) {
-    if (isIgnored(el)) continue;
+    if (isIgnored(el)) {
+      continue;
+    }
     const text = normaliseVisibleText(visibleTextOf(el, memo));
-    const at = text.toLowerCase().indexOf(target);
-    if (-1 !== at) return text.slice(at, at + target.length);
+    const at = foldTypography(text).toLowerCase().indexOf(target);
+    if (-1 !== at) {
+      return text.slice(at, at + target.length);
+    }
   }
   return undefined;
 }
@@ -820,7 +559,9 @@ function textOnly(query: ElementQuery): boolean {
 
 /** The text this query searched for, in either spelling, or undefined when it searched by something else. */
 function wantedTextOf(query: ElementQuery): string | undefined {
-  if (query.text !== undefined) return query.text;
+  if (query.text !== undefined) {
+    return query.text;
+  }
   return QueryBy.TEXT === query.by ? query.value : undefined;
 }
 
@@ -847,19 +588,33 @@ function nameNearMisses(container: HTMLElement, query: ElementQuery): string[] {
   // in silence while the by/value spelling explained itself. Same query, same page, two answers.
   const role = QueryBy.ROLE === query.by ? query.value : query.role;
   const wanted = query.name;
-  if (role === undefined || wanted === undefined || 0 === wanted.length) return [];
-  const target = normaliseVisibleText(wanted).toLowerCase();
-  if (0 === target.length) return [];
+  if (role === undefined || wanted === undefined || 0 === wanted.length) {
+    return [];
+  }
+  const target = comparableText(wanted).toLowerCase();
+  if (0 === target.length) {
+    return [];
+  }
   const out: string[] = [];
   for (const el of elementsUnder(container)) {
-    if (isIgnored(el) || getRole(el) !== role) continue;
+    if (isIgnored(el) || getRole(el) !== role) {
+      continue;
+    }
     const name = normaliseVisibleText(getAccessibleName(el));
-    if (0 === name.length) continue;
-    const folded = name.toLowerCase();
+    if (0 === name.length) {
+      continue;
+    }
+    const folded = foldTypography(name).toLowerCase();
     // Equality is impossible here — the exact query already missed — so this is strictly "close".
-    if (!folded.includes(target) && !target.includes(folded)) continue;
-    if (!out.includes(name)) out.push(name);
-    if (out.length >= MAX_NAME_NEAR_MISSES) break;
+    if (!folded.includes(target) && !target.includes(folded)) {
+      continue;
+    }
+    if (!out.includes(name)) {
+      out.push(name);
+    }
+    if (out.length >= MAX_NAME_NEAR_MISSES) {
+      break;
+    }
   }
   return out;
 }
@@ -870,14 +625,20 @@ function nameNearMisses(container: HTMLElement, query: ElementQuery): string[] {
  * marks controls differently sees "matched no element" on a button that is plainly there.
  */
 function testidFoundUnder(container: HTMLElement, query: ElementQuery): string | undefined {
-  if (QueryBy.TESTID !== query.by || undefined === query.value) return undefined;
+  if (QueryBy.TESTID !== query.by || undefined === query.value) {
+    return undefined;
+  }
   const configured = getTestIdAttr();
   for (const attr of [DEFAULT_TESTID_ATTR, ...ALTERNATIVE_TESTID_ATTRS]) {
-    if (attr === configured) continue;
+    if (attr === configured) {
+      continue;
+    }
     const found = elementsUnder(container).some(
       (el) => el.getAttribute(attr) === query.value && !isIgnored(el),
     );
-    if (found) return attr;
+    if (found) {
+      return attr;
+    }
   }
   return undefined;
 }
@@ -885,19 +646,31 @@ function testidFoundUnder(container: HTMLElement, query: ElementQuery): string |
 function textInAriaHidden(container: HTMLElement, wanted: string): boolean {
   let inAriaHidden = false;
   for (const el of elementsUnder(container)) {
-    if (isIgnored(el)) continue;
-    if (!isHiddenByAriaOnly(el)) continue;
+    if (isIgnored(el)) {
+      continue;
+    }
+    if (!isHiddenByAriaOnly(el)) {
+      continue;
+    }
     if (fuzzyVisibleText(el.textContent ?? '', wanted)) {
       inAriaHidden = true;
       break;
     }
   }
-  if (!inAriaHidden) return false;
+  if (!inAriaHidden) {
+    return false;
+  }
   const memo = new Map<Element, boolean>();
   for (const el of elementsUnder(container)) {
-    if (isIgnored(el)) continue;
-    if (!isRenderedOutsideAriaHidden(el)) continue;
-    if (fuzzyVisibleText(visibleTextOf(el, memo), wanted)) return false;
+    if (isIgnored(el)) {
+      continue;
+    }
+    if (!isRenderedOutsideAriaHidden(el)) {
+      continue;
+    }
+    if (fuzzyVisibleText(visibleTextOf(el, memo), wanted)) {
+      return false;
+    }
   }
   return true;
 }
@@ -916,17 +689,23 @@ function buildEmptyHint(
   // so the walk costs nothing the query had not already paid for.
   const seen = new Set<string>();
   for (const el of Array.from(all)) {
-    if (isIgnored(el)) continue; // the "what IS here" hint must not advertise Reticle's own UI either
+    if (isIgnored(el)) {
+      continue;
+    } // the "what IS here" hint must not advertise Reticle's own UI either
     const id = readTestId(el);
-    if (null === id || 0 === id.length || seen.has(id)) continue;
+    if (null === id || 0 === id.length || seen.has(id)) {
+      continue;
+    }
     seen.add(id);
-    if (present.length < MAX_PRESENT_TESTIDS) present.push(id);
+    if (present.length < MAX_PRESENT_TESTIDS) {
+      present.push(id);
+    }
   }
   // DECLARED, not observed: see declaredTestids. Every present testid is also an observed one, so
   // the merged list would make this flag true for any page that has a testid at all.
   const registered = declaredTestids();
   const knownEmptyState = present.some((id) => registered.includes(id));
-  const route = `${location.pathname}${location.search}`;
+  const route = pageRoute(false);
   const hint: QueryEmptyHint = {
     route,
     presentTestids: present,
@@ -947,7 +726,9 @@ function buildEmptyHint(
       hint.splitText = selector === undefined ? described : { ...described, selector };
     } else if (true === query.matchCase) {
       const shown = caseOnlyMatch(container, wanted);
-      if (shown !== undefined) hint.caseMiss = shown;
+      if (shown !== undefined) {
+        hint.caseMiss = shown;
+      }
     }
   }
   // A text or name match hidden only by aria-hidden — drawn on screen but excluded from the
@@ -960,12 +741,18 @@ function buildEmptyHint(
     hint.splitText === undefined &&
     (state === undefined || ElementState.VISIBLE === state || ElementState.IN_VIEWPORT === state)
   ) {
-    if (textInAriaHidden(container, wanted)) hint.ariaHiddenMatch = true;
+    if (textInAriaHidden(container, wanted)) {
+      hint.ariaHiddenMatch = true;
+    }
   }
   const near = nameNearMisses(container, query);
-  if (near.length > 0) hint.nameNearMiss = near;
+  if (near.length > 0) {
+    hint.nameNearMiss = near;
+  }
   const elsewhere = testidFoundUnder(container, query);
-  if (elsewhere !== undefined) hint.testidFoundUnder = elsewhere;
+  if (elsewhere !== undefined) {
+    hint.testidFoundUnder = elsewhere;
+  }
   return hint;
 }
 

@@ -20,11 +20,11 @@
  */
 
 import { log } from '@/log.js';
-import { isAlive, readPid, reticleStateHome, spawnDaemon } from '@/command/daemon/daemon.js';
+import { isAlive, reticleStateHome, spawnDaemon } from '@/command/daemon/daemon.js';
 import { readDaemonRegistry } from '@/command/daemon/daemon-resolve.js';
 import { LOOPBACK_HOST, STATUS_HOLD_MS } from '@reticlehq/core';
 import { probePresence, presenceIsUsable } from '@/command/daemon/binding/port-presence.js';
-import { probeDaemon, waitForDaemonBind } from '@/surface/mcp/mcp-proxy.js';
+import { daemonProcessAlive, probeDaemon, waitForDaemonBind } from '@/surface/mcp/mcp-proxy.js';
 import { daemonSpawnArgs, headlessByDefault } from '@/command/cli/daemon-start-options.js';
 import { fetchStatus, summarizeStatus } from '@/command/daemon/binding/daemon-status-probe.js';
 import { runKill } from '@/command/cli/cli-kill.js';
@@ -110,7 +110,7 @@ export async function ensureDaemon(
           `The Reticle daemon on port ${String(port)} is ${theirs}, which speaks a different wire ` +
           `contract than this init, so it will refuse your app — and ` +
           `${String(sessionCount)} session(s) are still using it, so init will not stop it. When ` +
-          `they are done, run \`npx @reticlehq/server kill --port ${String(port)}\` and re-run init.`,
+          `they are done, run \`npx @reticlehq/server stop --force --port ${String(port)}\` and re-run init.`,
       };
     }
     if (!(await deps.replace(port))) return { state: EnsureDaemon.UNAVAILABLE };
@@ -217,10 +217,7 @@ export function nodeEnsureDaemonDeps(skewed: (status: unknown) => boolean): Ensu
       if (true !== process.stderr.isTTY) log('reticle_setup_daemon_started', { port, started });
       return started;
     },
-    starting: (port: number): boolean => {
-      const pid = readPid(port);
-      return null !== pid && isAlive(pid);
-    },
+    starting: daemonProcessAlive,
     // The same wait `reticle restart` does: poll until `/status` answers as a daemon, bounded. A
     // cold daemon on a fresh HOME outlived the proxy's shorter reconnect budget this used to borrow.
     waitReady: async (port: number): Promise<unknown> => {

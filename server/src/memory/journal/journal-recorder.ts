@@ -36,9 +36,13 @@ const TYPED_KEYS = ['value', 'text'] as const;
  * tell the daemon which field was secret before the call is written, and nothing reads a typed value
  * back from the journal — the run fold reads the ref, the target and the action — so none is kept.
  */
-function withoutTypedInput(args: unknown): unknown {
-  if (Array.isArray(args)) return args.map(withoutTypedInput);
-  if ('object' !== typeof args || null === args) return args;
+export function withoutTypedInput(args: unknown): unknown {
+  if (Array.isArray(args)) {
+    return args.map(withoutTypedInput);
+  }
+  if ('object' !== typeof args || null === args) {
+    return args;
+  }
   const record = args as Record<string, unknown>;
   const typing = TYPING_ACTIONS.has(String(record['action']));
   const out: Record<string, unknown> = {};
@@ -49,7 +53,11 @@ function withoutTypedInput(args: unknown): unknown {
   }
   if (typing && 'object' === typeof record['args'] && null !== record['args']) {
     const inner = { ...(record['args'] as Record<string, unknown>) };
-    for (const key of TYPED_KEYS) if ('string' === typeof inner[key]) inner[key] = REDACTED_VALUE;
+    for (const key of TYPED_KEYS) {
+      if ('string' === typeof inner[key]) {
+        inner[key] = REDACTED_VALUE;
+      }
+    }
     out['args'] = inner;
   }
   return out;
@@ -204,7 +212,9 @@ export class JournalRecorder {
     // session keeps seeing this event. What is declined is the DURABLE copy: see isSelfObservation.
     if (!isSelfObservation(out)) {
       this.#pending.push(out);
-      if (this.#pending.length >= this.#flushAt) this.#enqueueFlush();
+      if (this.#pending.length >= this.#flushAt) {
+        this.#enqueueFlush();
+      }
     }
     return out;
   }
@@ -224,7 +234,9 @@ export class JournalRecorder {
   /** Close the active window: persist its buffered events, then the action record. No-op if none active. */
   finishAction(effect?: unknown, settled?: boolean, settledInMs?: number): void {
     const active = this.#active;
-    if (active === undefined) return;
+    if (active === undefined) {
+      return;
+    }
     this.#active = undefined;
     const action: JournalAction = {
       v: JOURNAL_FILE_VERSION,
@@ -311,7 +323,9 @@ export class JournalRecorder {
   }
 
   #enqueueFlush(): void {
-    if (0 === this.#pending.length) return;
+    if (0 === this.#pending.length) {
+      return;
+    }
     const batch = this.#pending;
     this.#pending = [];
     this.#chain = this.#chain
@@ -321,7 +335,9 @@ export class JournalRecorder {
 
   /** Swallow a lost write, but say so once. See JOURNAL_WRITE_LOST. */
   #reportLoss(error: unknown): void {
-    if (this.#lossReported) return;
+    if (this.#lossReported) {
+      return;
+    }
     this.#lossReported = true;
     log(JOURNAL_WRITE_LOST, { error: error instanceof Error ? error.message : String(error) });
   }

@@ -1,6 +1,9 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { EventType } from '@reticlehq/core';
+import { ReadableStream } from 'node:stream/web';
+import { TextDecoder, TextEncoder } from 'node:util';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { EventType, parseEventPayload } from '@reticlehq/core';
 import { installNetwork } from './network.js';
+import { setNetworkBodyMaxChars } from './net-detail/network-body.js';
 import type { Emit, Teardown } from './types.js';
 
 /**
@@ -18,7 +21,10 @@ import type { Emit, Teardown } from './types.js';
 
 const teardowns: Teardown[] = [];
 afterEach(() => {
-  for (const t of teardowns.splice(0)) t();
+  for (const t of teardowns.splice(0)) {
+    t();
+  }
+  setNetworkBodyMaxChars(8192);
   vi.unstubAllGlobals();
 });
 
@@ -27,8 +33,190 @@ function collect(): { emit: Emit; events: Array<{ type: string; data: Record<str
   return { emit: (type, data) => events.push({ type, data }), events };
 }
 
-/** NET_REQUEST (with the body) is emitted from a detached promise so the app never waits; let it land. */
+/** Body capture finishes in a detached promise. Let its event land. */
 const flushBody = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+/** Both branches use the real Streams tee, including its asynchronous cancellation behavior. */
+function controlledSse(status = 200) {
+  const encoder = new TextEncoder();
+  let write = (_text: string): void => undefined;
+  let close = (): void => undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      write = (text) => controller.enqueue(encoder.encode(text));
+      close = () => controller.close();
+    },
+  });
+  const [body, observed] = stream.tee();
+  const res = {
+    body,
+    status,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': 'text/event-stream; charset=utf-8' }),
+    clone: () => ({ body: observed }),
+  } as unknown as Response;
+  return { res, write, close };
+}
+
+async function readAppBody(res: Response): Promise<string> {
+  const reader = res.body?.getReader();
+  if (reader === undefined) {
+    throw new Error('response has no body');
+  }
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      return text + decoder.decode();
+    }
+    text += decoder.decode(next.value, { stream: true });
+  }
+}
+
+describe('SSE response body capture (#1848)', () => {
+  beforeEach(() => vi.stubGlobal('TextDecoder', TextDecoder));
+
+  it('completes the pending request at headers while capturing an idle SSE body', async () => {
+    const stream = controlledSse();
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    const teardown = installNetwork(emit, { captureBodies: true });
+    teardowns.push(teardown);
+    await window.fetch('/api/chat');
+    stream.write('data: ready\n\n');
+    await flushBody();
+    const pending = events.find((event) => EventType.NET_PENDING === event.type);
+    const completed = events.find(
+      (event) => EventType.NET_REQUEST === event.type && event.data['id'] === pending?.data['id'],
+    );
+    teardown();
+    stream.close();
+    expect(completed).toBeDefined();
+  });
+
+  it('returns headers first, then records a finished stream exactly once', async () => {
+    const stream = controlledSse();
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    teardowns.push(installNetwork(emit, { captureBodies: true }));
+    const res = await window.fetch('/api/chat');
+    expect(res).toBe(stream.res);
+    const appBody = readAppBody(res);
+    stream.write('data: hello\n\n');
+    await flushBody();
+    expect(events.filter((e) => e.type === EventType.NET_REQUEST)).toHaveLength(1);
+    expect(events.filter((e) => e.type === EventType.NET_RESPONSE_BODY)).toHaveLength(0);
+    stream.write('data: world\n\n');
+    stream.close();
+    expect(await appBody).toBe('data: hello\n\ndata: world\n\n');
+    await flushBody();
+    const requests = events.filter((event) => EventType.NET_RESPONSE_BODY === event.type);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data['responseBody']).toBe('data: hello\n\ndata: world\n\n');
+    expect(requests[0]?.data['responseBodyTruncated']).toBeUndefined();
+    expect(requests[0]?.data['responseBodyReason']).toBeUndefined();
+    expect(parseEventPayload(EventType.NET_RESPONSE_BODY, requests[0]?.data)).toMatchObject({
+      success: true,
+      data: requests[0]?.data,
+    });
+    // SSE does not enter the generic settle watcher, even with capture on.
+    expect(events.filter((e) => e.type === EventType.NET_STREAM)).toHaveLength(0);
+  });
+
+  it('does not emit a body detail when cloning fails', async () => {
+    const stream = controlledSse();
+    stream.res.clone = () => {
+      throw new Error('locked');
+    };
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    teardowns.push(installNetwork(emit, { captureBodies: true }));
+    const res = await window.fetch('/api/chat');
+    stream.write('data: app only\n\n');
+    stream.close();
+    expect(await readAppBody(res)).toBe('data: app only\n\n');
+    await flushBody();
+    expect(events.filter((event) => EventType.NET_REQUEST === event.type)).toHaveLength(1);
+    expect(events.filter((event) => EventType.NET_RESPONSE_BODY === event.type)).toHaveLength(0);
+  });
+
+  it('does not emit a body detail when teardown interrupts an empty stream', async () => {
+    const stream = controlledSse();
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    const teardown = installNetwork(emit, { captureBodies: true });
+    teardowns.push(teardown);
+    const res = await window.fetch('/api/chat');
+    teardown();
+    await flushBody();
+    expect(events.filter((event) => EventType.NET_RESPONSE_BODY === event.type)).toHaveLength(0);
+    stream.write('data: app only\n\n');
+    stream.close();
+    expect(await readAppBody(res)).toBe('data: app only\n\n');
+  });
+
+  it('emits a truncated prefix without waiting for the app branch to finish', async () => {
+    setNetworkBodyMaxChars(256);
+    const stream = controlledSse();
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    teardowns.push(installNetwork(emit, { captureBodies: true }));
+    const res = await window.fetch('/api/chat');
+    const appBody = readAppBody(res);
+    const prefix = 'data: ' + 'x'.repeat(2000) + '\n\n';
+    stream.write(prefix);
+    await flushBody();
+    const requests = events.filter((event) => EventType.NET_RESPONSE_BODY === event.type);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data['responseBody']).toBe('data: ' + 'x'.repeat(250));
+    expect(requests[0]?.data['responseBodyTruncated']).toBe(true);
+    stream.write('data: final\n\n');
+    stream.close();
+    expect(await appBody).toBe(prefix + 'data: final\n\n');
+    await flushBody();
+    expect(events.filter((e) => e.type === EventType.NET_REQUEST)).toHaveLength(1);
+  });
+
+  it('stops observing on teardown while the app can still finish reading', async () => {
+    const stream = controlledSse();
+    vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+    const { emit, events } = collect();
+    const teardown = installNetwork(emit, { captureBodies: true });
+    teardowns.push(teardown);
+    const res = await window.fetch('/api/chat');
+    const appBody = readAppBody(res);
+    stream.write('data: first\n\n');
+    await flushBody();
+    teardown();
+    await flushBody();
+    const requests = events.filter((event) => EventType.NET_RESPONSE_BODY === event.type);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.data['responseBody']).toBe('data: first\n\n');
+    expect(requests[0]?.data['responseBodyTruncated']).toBe(true);
+    stream.write('data: final\n\n');
+    stream.close();
+    expect(await appBody).toBe('data: first\n\ndata: final\n\n');
+  });
+
+  it.each([200, 500])(
+    'does not capture SSE with general capture off, status %s',
+    async (status) => {
+      const stream = controlledSse(status);
+      vi.stubGlobal('fetch', () => Promise.resolve(stream.res));
+      const { emit, events } = collect();
+      teardowns.push(installNetwork(emit));
+      const res = await window.fetch('/api/chat');
+      stream.write('data: private\n\n');
+      stream.close();
+      expect(await readAppBody(res)).toBe('data: private\n\n');
+      const requests = events.filter((e) => e.type === EventType.NET_REQUEST);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.data['responseBody']).toBeUndefined();
+      expect(requests[0]?.data['responseBodyReason']).toBeUndefined();
+    },
+  );
+});
 
 /** A response whose body never completes — an SSE endpoint held open by the server. */
 function neverEndingResponse(contentType: string): Response {

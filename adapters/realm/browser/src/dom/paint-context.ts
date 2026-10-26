@@ -20,6 +20,8 @@
  * which property, or which line of code. This keeps the terms, so a finding is attributable.
  */
 
+import { isHtmlElement } from './realm.js';
+
 /** One reason this element does not rasterise the way its own style suggests. */
 export interface PaintContextEntry {
   /** A description of the element applying it — its id, else its classes, else its tag. */
@@ -85,4 +87,123 @@ export function paintContextOf(el: Element): PaintContextEntry[] {
     }
   }
   return found;
+}
+
+/**
+ * The clip an ancestor's overflow puts on what reaches the screen: the other half of the ancestor
+ * chain that `a11y.ts` walks to decide whether an element is visible and in the viewport.
+ */
+export type VisibleBounds = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>;
+export interface VisibilityInfo {
+  hidden: boolean;
+  style: CSSStyleDeclaration | null;
+  parent: Element | null;
+  clipX: boolean;
+  clipY: boolean;
+  /** Scrollable on that axis: content past the edge is reachable by scrolling. */
+  scrollX: boolean;
+  scrollY: boolean;
+  hasClipping: boolean;
+  clipBox?: VisibleBounds;
+}
+
+export function overflowAxes(style: CSSStyleDeclaration | null): [string, string] {
+  const shorthand = style?.overflow ?? '';
+  const [x = 'visible', y = x] = ('' === shorthand ? 'visible' : shorthand).split(/\s+/);
+  return [
+    null === style || '' === style.overflowX ? x : style.overflowX,
+    null === style || '' === style.overflowY ? y : style.overflowY,
+  ];
+}
+
+export function clippingBox(el: Element, info: VisibilityInfo): VisibleBounds {
+  if (info.clipBox !== undefined) {
+    return info.clipBox;
+  }
+  const rect = el.getBoundingClientRect();
+  const style = info.style;
+  const px = (value: string | undefined): number => Number.parseFloat(value ?? '') || 0;
+  const border = (value: string | undefined, kind: string | undefined): number =>
+    kind === undefined || '' === kind || 'none' === kind || 'hidden' === kind ? 0 : px(value);
+  const scaleX = isHtmlElement(el) && el.offsetWidth > 0 ? rect.width / el.offsetWidth : 1;
+  const scaleY = isHtmlElement(el) && el.offsetHeight > 0 ? rect.height / el.offsetHeight : 1;
+  const left =
+    isHtmlElement(el) && el.offsetWidth > 0
+      ? rect.left + el.clientLeft * scaleX
+      : rect.left + border(style?.borderLeftWidth, style?.borderLeftStyle);
+  const top =
+    isHtmlElement(el) && el.offsetHeight > 0
+      ? rect.top + el.clientTop * scaleY
+      : rect.top + border(style?.borderTopWidth, style?.borderTopStyle);
+  const right =
+    isHtmlElement(el) && el.offsetWidth > 0
+      ? left + el.clientWidth * scaleX
+      : rect.right - border(style?.borderRightWidth, style?.borderRightStyle);
+  const bottom =
+    isHtmlElement(el) && el.offsetHeight > 0
+      ? top + el.clientHeight * scaleY
+      : rect.bottom - border(style?.borderBottomWidth, style?.borderBottomStyle);
+  const margin = (style?.overflowClipMargin ?? '').split(/\s+/);
+  const outset = px(margin.at(-1));
+  const borderBox = margin.includes('border-box');
+  const contentBox = margin.includes('content-box');
+  const [x, y] = overflowAxes(style);
+  const clipLeft =
+    'clip' === x
+      ? (borderBox ? rect.left : left + (contentBox ? px(style?.paddingLeft) * scaleX : 0)) -
+        outset * scaleX
+      : left;
+  const clipRight =
+    'clip' === x
+      ? (borderBox ? rect.right : right - (contentBox ? px(style?.paddingRight) * scaleX : 0)) +
+        outset * scaleX
+      : right;
+  const clipTop =
+    'clip' === y
+      ? (borderBox ? rect.top : top + (contentBox ? px(style?.paddingTop) * scaleY : 0)) -
+        outset * scaleY
+      : top;
+  const clipBottom =
+    'clip' === y
+      ? (borderBox ? rect.bottom : bottom - (contentBox ? px(style?.paddingBottom) * scaleY : 0)) +
+        outset * scaleY
+      : bottom;
+  info.clipBox = {
+    left: clipLeft,
+    right: clipRight,
+    top: clipTop,
+    bottom: clipBottom,
+    width: clipRight - clipLeft,
+    height: clipBottom - clipTop,
+  };
+  return info.clipBox;
+}
+
+/** A box outside a scrollport, moved to its near edge on each scrolling axis, as scrolling would. */
+export function scrolledInto(
+  b: VisibleBounds,
+  port: VisibleBounds,
+  alongX: boolean,
+  alongY: boolean,
+): VisibleBounds {
+  const axis = (
+    lo: number,
+    hi: number,
+    size: number,
+    from: number,
+    to: number,
+  ): [number, number] => {
+    if (hi > from && lo < to) {
+      return [lo, hi];
+    }
+    const span = Math.min(size, to - from);
+    return lo >= to ? [to - span, to] : [from, from + span];
+  };
+  const [left, right] = alongX
+    ? axis(b.left, b.right, b.width, port.left, port.right)
+    : [b.left, b.right];
+  const [top, bottom] = alongY
+    ? axis(b.top, b.bottom, b.height, port.top, port.bottom)
+    : [b.top, b.bottom];
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
 }

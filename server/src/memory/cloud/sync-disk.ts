@@ -11,6 +11,12 @@
  * error — the file will be rewritten on the next tool call anyway.
  */
 import { shareableRun } from '@reticlehq/core/artifacts';
+import { agentContextFor } from '@/memory/journal/episode-log.js';
+import {
+  agentCaptureOff,
+  agentCaptureOffIn,
+  sharesRequests,
+} from '@/memory/intent/record-request.js';
 import {
   existsSync,
   mkdirSync,
@@ -62,7 +68,9 @@ function writeJson(path: string, value: unknown): void {
 /** Every `*.json` directly inside a directory, parsed. Absent directory reads as empty. */
 function readJsonDir(dir: string): unknown[] {
   try {
-    if (!existsSync(dir)) return [];
+    if (!existsSync(dir)) {
+      return [];
+    }
     return readdirSync(dir)
       .filter((f) => f.endsWith(JSON_SUFFIX))
       .map((f) => readJson(join(dir, f)))
@@ -84,8 +92,12 @@ function readFlowFiles(root: string): Array<{ path: string; flow: unknown }> {
     try {
       return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const path = join(dir, entry.name);
-        if (entry.isDirectory()) return walk(path);
-        if (!entry.name.endsWith(JSON_SUFFIX)) return [];
+        if (entry.isDirectory()) {
+          return walk(path);
+        }
+        if (!entry.name.endsWith(JSON_SUFFIX)) {
+          return [];
+        }
         const flow = readJson(path);
         return flow === undefined ? [] : [{ path, flow }];
       });
@@ -106,10 +118,14 @@ function keepConflictCopy(root: string, name: string, theirs: unknown): string |
     ({ flow }) =>
       'object' === typeof flow && null !== flow && (flow as { name?: unknown }).name === name,
   );
-  if (held === undefined || 'object' !== typeof theirs || null === theirs) return undefined;
+  if (held === undefined || 'object' !== typeof theirs || null === theirs) {
+    return undefined;
+  }
   const stem = held.path.slice(0, -JSON_SUFFIX.length);
   let n = 1;
-  while (existsSync(`${stem}-conflict-${String(n)}${JSON_SUFFIX}`)) n += 1;
+  while (existsSync(`${stem}-conflict-${String(n)}${JSON_SUFFIX}`)) {
+    n += 1;
+  }
   const copy = `${name}-conflict-${String(n)}`;
   writeJson(`${stem}-conflict-${String(n)}${JSON_SUFFIX}`, {
     ...(held.flow as object),
@@ -154,7 +170,9 @@ function readIntent(reticleRoot: string): unknown {
   };
   let shards = 0;
   for (const entry of safeReaddir(join(reticleRoot, INTENT_SUBDIR))) {
-    if (INTENT_INDEX === entry) continue;
+    if (INTENT_INDEX === entry) {
+      continue;
+    }
     // `<subject>/intent.json` is the layout; a bare `<subject>.json` is an interim shard the store
     // has not migrated yet, and is still this project's memory until it has.
     const path = entry.endsWith(JSON_SUFFIX)
@@ -162,11 +180,17 @@ function readIntent(reticleRoot: string): unknown {
       : join(reticleRoot, INTENT_SUBDIR, entry, IntentDir.SHARD_FILE);
     const shard = readJson(path) as { intents?: Record<string, unknown> } | undefined;
     // A hand-edited or half-written shard costs one subject, never the whole sync.
-    if (shard?.intents === undefined) continue;
+    if (shard?.intents === undefined) {
+      continue;
+    }
     shards++;
-    for (const [id, record] of Object.entries(shard.intents)) merged[id] = record;
+    for (const [id, record] of Object.entries(shard.intents)) {
+      merged[id] = record;
+    }
   }
-  if (legacy === undefined && 0 === shards) return undefined;
+  if (legacy === undefined && 0 === shards) {
+    return undefined;
+  }
   /*
    * Stamp the SUBJECT before sending, on anything that does not already carry one.
    *
@@ -192,7 +216,9 @@ function readIntent(reticleRoot: string): unknown {
         ...('string' === typeof run && 0 < run.length ? { provedBy: run } : {}),
       };
       const held = record as { subject?: unknown; surface?: unknown; binding?: unknown };
-      if ('string' === typeof held.subject && held.subject.length > 0) return [id, record];
+      if ('string' === typeof held.subject && held.subject.length > 0) {
+        return [id, record];
+      }
       const subject = subjectFor({
         surface: held.surface as { route?: string; flow?: string } | undefined,
         binding: held.binding,
@@ -212,19 +238,76 @@ function safeReaddir(dir: string): string[] {
   }
 }
 
+/**
+ * A run with the agent's model and the claim that closed its turn, from the agent hooks' records
+ * (see `agentContextFor`). Filled only where the run says nothing. The claim goes into the prompt
+ * context, so it leaves the machine under the same share decision as the request: a context the
+ * run did not have takes the project's setting.
+ */
+function withAgentContext(payload: unknown, reticleRoot: string): unknown {
+  if ('object' !== typeof payload || null === payload) {
+    return payload;
+  }
+  const run = payload as {
+    agent?: { model?: unknown };
+    context?: { closingClaim?: unknown; shared?: unknown };
+  };
+  const found = agentContextFor(reticleRoot, run);
+  let out: Record<string, unknown> = { ...run };
+  if (found.model !== undefined && run.agent !== undefined && run.agent.model === undefined) {
+    out = { ...out, agent: { ...run.agent, model: found.model } };
+  }
+  if (found.claim !== undefined && run.context?.closingClaim === undefined) {
+    const shared =
+      'boolean' === typeof run.context?.shared
+        ? run.context.shared
+        : sharesRequests(dirname(reticleRoot), reticleRoot);
+    out = {
+      ...out,
+      context: {
+        statements: [],
+        ...run.context,
+        closingClaim: found.claim.text,
+        closingClaimAt: found.claim.at,
+        shared,
+      },
+    };
+  }
+  return out;
+}
+
+/**
+ * A run with nothing the agent hooks kept: no prompt context. Agent capture is off, so the files
+ * that the hooks wrote before the switch went off do not leave the machine either.
+ */
+function withoutAgentCapture(payload: unknown): unknown {
+  if ('object' !== typeof payload || null === payload) {
+    return payload;
+  }
+  const { context: _context, ...rest } = payload as { context?: unknown };
+  return rest;
+}
+
 /** What the cycle reads, backed by a real `.reticle` directory. */
-export function diskSource(reticleRoot: string): SyncSource {
+export function diskSource(reticleRoot: string, env: NodeJS.ProcessEnv = process.env): SyncSource {
   return {
-    runs: () =>
-      readJsonDir(join(reticleRoot, ReticleDir.RUNS_SUBDIR))
-        .map((payload) => {
-          const id = (payload as { runId?: unknown } | null)?.runId;
-          // The prompt context leaves the machine only when the project opted in.
-          return 'string' === typeof id ? { runId: id, payload: shareableRun(payload) } : undefined;
-        })
-        // A run artifact with no id cannot be diffed against the server's list, so sending it would
-        // mean re-sending it every cycle forever. Dropped rather than uploaded repeatedly.
-        .filter((r): r is { runId: string; payload: unknown } => r !== undefined),
+    runs: () => {
+      const captureOff = agentCaptureOff(env) || agentCaptureOffIn(dirname(reticleRoot));
+      return (
+        readJsonDir(join(reticleRoot, ReticleDir.RUNS_SUBDIR))
+          .map((payload) => {
+            const id = (payload as { runId?: unknown } | null)?.runId;
+            // The prompt context leaves the machine only when the project opted in.
+            const sent = captureOff
+              ? withoutAgentCapture(payload)
+              : shareableRun(withAgentContext(payload, reticleRoot));
+            return 'string' === typeof id ? { runId: id, payload: sent } : undefined;
+          })
+          // A run artifact with no id cannot be diffed against the server's list, so sending it
+          // would mean re-sending it every cycle forever. Dropped rather than uploaded repeatedly.
+          .filter((r): r is { runId: string; payload: unknown } => r !== undefined)
+      );
+    },
     flows: () => readFlows(reticleRoot),
     // Flat directory of `<id>.json`, which is exactly what readJsonDir walks — unlike flows, which
     // sit one level deeper under the app's project id.
@@ -236,7 +319,9 @@ export function diskSource(reticleRoot: string): SyncSource {
     // own directory before it is read.
     screenshot: (runId, file) => {
       try {
-        if (basename(file) !== file) return undefined;
+        if (basename(file) !== file) {
+          return undefined;
+        }
         return new Uint8Array(readFileSync(join(stepShotDir(reticleRoot, runId), file)));
       } catch {
         return undefined;
@@ -256,8 +341,12 @@ export function policyScreenshots(
   read: SyncSource['screenshot'],
   policy: { screenshots: boolean; video: boolean },
 ): Pick<SyncSource, 'screenshot'> {
-  if (!policy.screenshots || read === undefined) return {};
-  if (policy.video) return { screenshot: read };
+  if (!policy.screenshots || read === undefined) {
+    return {};
+  }
+  if (policy.video) {
+    return { screenshot: read };
+  }
   return {
     screenshot: (runId, file) => (file.endsWith(FRAME_FILE_SUFFIX) ? undefined : read(runId, file)),
   };

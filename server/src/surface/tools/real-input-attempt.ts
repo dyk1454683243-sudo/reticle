@@ -39,6 +39,7 @@ import {
   unspellablePressReason,
 } from '@/portal/input/real-input.js';
 import { assertDragNotDestructive, assertNotDestructive } from './act/act-danger.js';
+import { assertNativeAllowed } from '@/portal/production/production-drive.js';
 import { NATIVE_INPUT_ARG } from '@reticlehq/core';
 import { asNumber, asRecord, asString } from '@reticlehq/core';
 import { type ToolDeps, commandOrThrow } from './tool-kit.js';
@@ -195,7 +196,12 @@ async function resolveUploadPath(
     );
   });
 
-  const allowed = [projectRoot, ...uploadRoots];
+  // The roots go through realpath too, or one path compares under two spellings: a Windows 8.3
+  // short name (`RUNNER~1`) against the long name realpath returns, or macOS `/tmp` against
+  // `/private/tmp`. A root that cannot be resolved keeps the spelling it was given.
+  const allowed = await Promise.all(
+    [projectRoot, ...uploadRoots].map((root) => fs.realpath(root).catch(() => root)),
+  );
   if (!allowed.some((root) => isInsideRoot(real, root))) {
     const listed = allowed.map((r) => `'${r}'`).join(', ');
     throw new Error(
@@ -521,6 +527,12 @@ export async function tryRealInput(
   if (action === ActionType.HOVER) {
     return hoverForReal(deps, session, ref, inner, provider);
   }
+  // The production policy judges a command by the control it names, when the daemon dispatches
+  // it. A native key goes to whatever holds focus, so the policy cannot see what it presses. On a
+  // production drive a press runs in the page, where the daemon judges it.
+  if (action === ActionType.PRESS && session.production !== undefined) {
+    return synthetic(InputModeReason.PRODUCTION_PRESS_IN_PAGE);
+  }
   if (provider === undefined) {
     if (action === ActionType.PRESS) {
       const leased = await pressOnLease(deps, session, ref, inner);
@@ -615,6 +627,7 @@ export async function tryRealInput(
   const { inspected } = source;
   let { scrolled } = source;
   assertNotDestructive(action, inner, inspected);
+  await assertNativeAllowed(session.production, action, inspected);
   let box = asBox(inspected);
   // A box outside the viewport after the reveal is a gesture that would land on nothing. The
   // synthetic path scrolls and hit-tests on its own, so it is the honest answer.

@@ -96,6 +96,8 @@ export const EventType = {
    * matching in-page NET_REQUEST so the driven view never loses fidelity to an outside-in tool.
    */
   NET_DETAIL: 'net.detail',
+  /** SDK response body captured after headers. Matched to its NET_REQUEST by id, method and URL. */
+  NET_RESPONSE_BODY: 'net.response-body',
   /**
    * Live-control: browser → bridge. A human acted on the presenter panel.
    * `data: { kind: HumanControlKind; text?: string }`. Rides the existing EventMessage.
@@ -121,5 +123,38 @@ export const EventType = {
    * off the wire before the buffer, so no verdict, settle or agent read ever sees it.
    */
   HUD_USED: 'hud.used',
+  /**
+   * A `<video>` or `<audio>` changed playback state: `data: { event, tag, currentTime, duration?,
+   * readyState, paused }`. The event's own `t` orders it against the network, which is what a media
+   * defect ("Ready before the response arrived") is: an ordering in time no DOM count shows.
+   */
+  MEDIA_STATE: 'media.state',
+  /**
+   * A `<canvas>` drew something different: `data: { digest, width, height, mean }`. A hash of a
+   * 16x16 sample of its pixels and their mean colour, emitted only when the digest changes. What a
+   * canvas shows never reaches the DOM, so without this a canvas app's output is invisible.
+   */
+  CANVAS_DIGEST: 'canvas.digest',
 } as const;
 export type EventType = (typeof EventType)[keyof typeof EventType];
+
+/** The media events `MEDIA_STATE` reports. Not `timeupdate`: it fires several times a second. */
+export const MediaEvent = {
+  PLAY: 'play',
+  PLAYING: 'playing',
+  PAUSE: 'pause',
+  SEEKED: 'seeked',
+  ENDED: 'ended',
+  LOADED_DATA: 'loadeddata',
+  CAN_PLAY: 'canplay',
+  WAITING: 'waiting',
+  ERROR: 'error',
+} as const;
+export type MediaEvent = (typeof MediaEvent)[keyof typeof MediaEvent];
+
+/** What took a `CANVAS_DIGEST`: the 500 ms poll, or the end of an act (inside its window). */
+export const CanvasTrigger = {
+  POLL: 'poll',
+  ACT: 'act',
+} as const;
+export type CanvasTrigger = (typeof CanvasTrigger)[keyof typeof CanvasTrigger];

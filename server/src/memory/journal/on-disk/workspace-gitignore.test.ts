@@ -81,9 +81,39 @@ describe('the workspace gitignore', () => {
 
   it('does not overwrite one the user has edited', async () => {
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, '.gitignore'), 'mine\n', 'utf8');
+    writeFileSync(join(root, '.gitignore'), 'mine\nsessions/\n', 'utf8');
     await ensureWorkspaceGitignore(createNodeFileSystem(), root);
-    expect(readIgnore()).toBe('mine\n');
+    expect(readIgnore().startsWith('mine\nsessions/\n')).toBe(true);
+  });
+
+  /**
+   * The defect: a project initialised before prompt capture had an ignore file without
+   * `requests.jsonl`, and the early return kept it that way, so `git add -A` committed every prompt.
+   */
+  it('adds the prompt files to an older one, and keeps every line the user wrote', async () => {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, '.gitignore'), 'mine\nrequest.json', 'utf8');
+    await ensureWorkspaceGitignore(createNodeFileSystem(), root);
+    const lines = readIgnore().split('\n');
+    expect(lines.slice(0, 2)).toEqual(['mine', 'request.json']);
+    for (const name of [
+      ReticleDir.REQUEST_FILE,
+      ReticleDir.REQUESTS_LOG_FILE,
+      ReticleDir.REQUESTS_LOG_ROTATED_FILE,
+    ]) {
+      expect(
+        lines.filter((l) => l === name),
+        name,
+      ).toHaveLength(1);
+    }
+    const once = readIgnore();
+    await ensureWorkspaceGitignore(createNodeFileSystem(), root);
+    expect(readIgnore()).toBe(once);
+  });
+
+  it('ignores the rotated prompt history in a new one', async () => {
+    await ensureWorkspaceGitignore(createNodeFileSystem(), root);
+    expect(readIgnore().split('\n')).toContain(ReticleDir.REQUESTS_LOG_ROTATED_FILE);
   });
 
   it('is idempotent', async () => {

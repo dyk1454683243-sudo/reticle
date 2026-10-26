@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/server",
-  "version": "3.7.0",
+  "version": "3.8.1",
   "mcpName": "io.github.reticlehq/reticle",
   "description": "Reticle CLI, bridge and MCP server: a coding agent drives your running web app from the inside and gets a verdict with evidence, for change verification, access control, accessibility, performance and SEO checks.",
   "type": "module",
@@ -37,8 +37,7 @@
     "@reticlehq/init": "workspace:*",
     "open-verification": "workspace:*",
     "ws": "^8.21.3",
-    "zod": "^3.24.1",
-    "zod-to-json-schema": "^3.24.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/pngjs": "^6.0.5",
@@ -75,10 +74,8 @@
     "cli"
   ],
   "reticle": {
-    "changelog": "Drive your localhost app from the Reticle platform's chat: the daemon of a linked project drives it on your machine, the chat shows it live and keeps it as a check with a replay. The Harness now runs only on the platform, on every plan, and plans, replays and learns each app. A page on SDK 3.1-3.4 is no longer version-skewed, a pressed key sends its keyCode, and a screenshot never carries another tab's pixels. Upgrading from 3.5: see MIGRATION.md.",
-    "breakingChanges": [
-      "reticle_verify { action: \"explore\" } and reticle verify --explore no longer drive on a model key of your own. The Harness decides on the Reticle platform and needs a linked project (npx @reticlehq/server connect); every plan includes credits. ANTHROPIC_API_KEY, OPENAI_API_KEY and JEV_API_KEY are no longer read for driving, RETICLE_HARNESS_DRIVER and RETICLE_HARNESS_MODEL are ignored, and the explore tool's `driver` argument is removed. A secret field's value comes from RETICLE_SECRET_<FIELD> on your machine."
-    ]
+    "changelog": "On Windows, the daemon now keeps running when the agent process that started it ends. A collapsed Next.js \"1 Issue\" badge no longer turns every check into unknown. Reticle moves to zod 4 for a high-severity memory advisory. reticle_lease can omit url and lease the project's own dev server. reticle doctor checks that the daemon answers, and streamed SSE response bodies can be captured. Update the SDK in your app as well as the CLI.",
+    "breakingChanges": []
   },
   "publishConfig": {
     "access": "public"

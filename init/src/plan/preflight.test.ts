@@ -89,7 +89,8 @@ describe('preflight resolves the invocation, or refuses what cannot possibly wor
 describe('a corepack-managed package manager is not a missing one', () => {
   // The bare binary is gone; corepack can still run it.
   const corepackOnly = io({
-    probe: (command, args) => 'corepack' === command && 'pnpm' === args[0] && '--version' === args[1],
+    probe: (command, args) =>
+      'corepack' === command && 'pnpm' === args[0] && '--version' === args[1],
   });
 
   it('resolves to the corepack-prefixed command when corepack can run it and the bare binary cannot', () => {

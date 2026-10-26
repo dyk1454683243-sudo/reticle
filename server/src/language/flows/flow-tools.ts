@@ -13,13 +13,12 @@ import {
   type ProjectId,
   FlowErrorCode,
   RecordedSaveError,
-  ReplayStatus,
   type FlowReplayResult,
   SuiteIsolation,
 } from '@reticlehq/core';
 import type { FlowFile } from '@reticlehq/core';
 import { recordSuiteFlakes } from './suite/suite-flakes.js';
-import { AppRuntime, ReticleTool } from '@reticlehq/core';
+import { ReticleTool } from '@reticlehq/core';
 import { asNumber, asString } from '@reticlehq/core';
 import { log } from '@/log.js';
 import { cloudFetch, syncFlowToCloud, SyncOutcome } from '@/memory/cloud/cloud-sync.js';
@@ -52,6 +51,8 @@ import { replayOneFlow } from './single-replay.js';
 
 export { replayNamedFlow } from './flow-replay-run.js';
 import { replayAndLearn } from './flow-learning.js';
+import { leasableAppUrl, leaseFailureReplay, sessionUrlOf } from './flow-lease.js';
+export { leasableAppUrl, leaseFailureReplay, sessionUrlOf } from './flow-lease.js';
 
 /**
  * Best-effort mirror of a just-saved flow to Reticle (only when logged in — both cloud env vars
@@ -73,7 +74,9 @@ async function syncSavedFlowToCloud(
     homedir(),
     process.env,
   );
-  if (null === cloud.config || !cloud.policy.flows) return; // not attached / flows disabled → local only
+  if (null === cloud.config || !cloud.policy.flows) {
+    return;
+  } // not attached / flows disabled → local only
   const result = await syncFlowToCloud(flow, cloud.config, target.projectId, cloudFetch);
   if (result.outcome !== SyncOutcome.SYNCED) {
     log('cloud-flow-sync-failed', { flow: flow.name, status: result.status, error: result.error });
@@ -82,56 +85,6 @@ async function syncSavedFlowToCloud(
 
 /** A step index no recorded flow reaches; bounds `to` and `at`. */
 const MAX_REPLAY_STEP = 10_000;
-
-/**
- * The URL a leased context should open: the app's ORIGIN, not the live tab's current location.
- *
- * The live tab drifts — every replay navigates it — so using its full URL made each lease start wherever
- * the previous run happened to finish (observed: leases opening /deployments and failing to find the
- * login control that only exists at the root). A lease must be a FRESH visit to a deterministic entry
- * point; flows that need another page carry their own startPath.
- */
-export function leasableAppUrl(deps: ToolDeps, sessionId: string | undefined): string | undefined {
-  try {
-    const session = deps.sessions.resolve(sessionId);
-    if (AppRuntime.WEB !== (session.runtime ?? AppRuntime.WEB)) return undefined; // desktop: no IPC in a lease
-    const url = session.url;
-    if (typeof url !== 'string' || 0 === url.length) return undefined;
-    return new URL(url).origin;
-  } catch {
-    return undefined; // no live session (or an unparseable URL) → sequential path
-  }
-}
-
-/**
- * The live session's own URL — what the fixture port must be looked up by.
- *
- * NOT `leasableAppUrl`. That returns an ORIGIN, and the input provider finds a page by comparing
- * full URLs, so an origin matched no page: `suiteFixtureSeed` answered `undefined` on every run and
- * every leased flow booted cold while the code read as if it were seeded. Silent, because every
- * refusal on that path is deliberately silent — a fixture is an optimisation, and a suite must not
- * die when one is unavailable.
- */
-export function sessionUrlOf(deps: ToolDeps, sessionId: string | undefined): string | undefined {
-  try {
-    return deps.sessions.resolve(sessionId).url;
-  } catch {
-    return undefined;
-  }
-}
-
-/** A flow whose leased context never came up is a suite ERROR, never a silent pass. */
-export function leaseFailureReplay(name: string, error: string | undefined): FlowReplayResult {
-  return {
-    name,
-    status: ReplayStatus.ERROR,
-    steps: [],
-    error: {
-      code: ReplayStatus.ERROR,
-      message: `could not run in a leased context: ${error ?? 'unknown error'}`,
-    },
-  };
-}
 
 /** Stand-in path for a flow whose name fails the path-segment guard — never a real join. */
 const INVALID_FLOW_NAME_PATH = '(invalid flow name — not a usable path)';
@@ -286,7 +239,9 @@ export const FLOW_TOOLS: ToolDef[] = [
       // A zero-step recording is not a flow. Saving it wrote a file the suite reports "unverifiable"
       // forever while telling the agent it had saved a regression test — see empty-flow.
       const emptyRefusal = emptyFlowRefusal(program.steps.length, name);
-      if (emptyRefusal !== undefined) return Promise.resolve(emptyRefusal);
+      if (emptyRefusal !== undefined) {
+        return Promise.resolve(emptyRefusal);
+      }
       const { flows, root } = flowsForSession(deps, target);
       const author = flowAuthor();
       const toSave = {
@@ -295,7 +250,9 @@ export const FLOW_TOOLS: ToolDef[] = [
         ...(author === undefined ? {} : { author }),
       };
       return flows.save(toSave, annotations, projectId).then(async (res) => {
-        if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+        if (!res.ok) {
+          return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+        }
         deps.annotations.clear(name);
         // Grade the saved flow's assertions so the agent learns immediately if it just saved a flow
         // that asserts nothing observable (passes even when the feature is broken).
@@ -395,7 +352,9 @@ export const FLOW_TOOLS: ToolDef[] = [
       return flows
         .load(asString(aliasParam(args, 'flowName', ['flow'])['flowName']) ?? '', projectId)
         .then((res) => {
-          if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+          if (!res.ok) {
+            return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+          }
           const { name, ...rest } = res.value;
           return { flowName: name, ...rest };
         });
@@ -427,7 +386,9 @@ export const FLOW_TOOLS: ToolDef[] = [
       return flows
         .remove(asString(aliasParam(args, 'flowName', ['flow'])['flowName']) ?? '', projectId)
         .then((res) => {
-          if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+          if (!res.ok) {
+            return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+          }
           return { deleted: true };
         });
     },
@@ -444,7 +405,8 @@ export const FLOW_TOOLS: ToolDef[] = [
       'document) — neither pass nor fail, treat as UNKNOWN. ' +
       'An ok replay of a flow asserting no consequence also carries unverifiable:{reason} — do not ' +
       'treat as proof. ' +
-      'Early halt carries halted:{atStep, notAttempted}: `steps` is shorter because replay stopped.',
+      'Early halt carries halted:{atStep, notAttempted}: `steps` is shorter because replay stopped. ' +
+      'A start page that kept loading past the step budget carries startPageWait:{waitedMs, budgetMs, stillLoading}.',
     inputSchema: {
       flow: FLOW_NAME_ALIAS,
       flowName: z
@@ -521,6 +483,13 @@ export const FLOW_TOOLS: ToolDef[] = [
         .optional()
         .describe(
           'Set when the replay STOPPED at a failing step: `steps` is shorter than the flow, and this says where it stopped and how many steps were never attempted. Absent means every step ran.',
+        ),
+      // Declared for the same reason as `halted`: an undeclared field is stripped.
+      startPageWait: z
+        .object({ waitedMs: z.number(), budgetMs: z.number(), stillLoading: z.boolean() })
+        .optional()
+        .describe(
+          'Set when replay waited past the step budget because the start page was still loading. stillLoading is what the tab said the last time replay asked. Absent means the wait stayed inside the budget.',
         ),
       // Declared here or a validating profile strips it -- the same way `name` was stripped once.
       // A field the handler sets and the schema omits arrives as nothing, silently.
@@ -705,7 +674,9 @@ export const FLOW_TOOLS: ToolDef[] = [
           process.env,
         );
         const server = await runServerVerify(deps, cloud, sessionId, requested);
-        if (server !== null) return server;
+        if (server !== null) {
+          return server;
+        }
         // PARALLEL: flows race the DOM only when they share ONE tab. Given the lease pool, each
         // flow gets its own isolated context, so a large suite finishes in interactive time. Opt-in via
         // `parallel`; a missing prerequisite (no pool, unknown app URL) falls back to the sequential path
@@ -898,13 +869,17 @@ export const FLOW_TOOLS: ToolDef[] = [
       // The store stamps the project into the file AND routes it to the per-project subdir (a shared
       // daemon serves many apps), so location and content agree from one source of truth.
       const emptyRecorded = emptyFlowRefusal(flow.steps.length, flow.name);
-      if (emptyRecorded !== undefined) return emptyRecorded;
+      if (emptyRecorded !== undefined) {
+        return emptyRecorded;
+      }
       // Resolved like every other path now. This save used to go to the daemon's root while the
       // recorded-flow save resolved per session, so where a flow landed depended on which tool wrote
       // it — and the pair that disagreed were the two ways to save the same thing.
       const target: ProjectTarget = { projectId: session.projectId, origin: originOf(session.url) };
       const res = await flowsForSession(deps, target).flows.saveFlow(flow, session.projectId);
-      if (!res.ok) return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+      if (!res.ok) {
+        return { error: flowErrorMessage(res.code, res.detail), code: res.code };
+      }
       // If logged in to Reticle, mirror the saved flow to the team's regression suite. Best-effort
       // and non-blocking: the flow is already on disk, so a sync failure never fails the save.
       void syncSavedFlowToCloud(deps, flow, target);
@@ -928,7 +903,7 @@ export const FLOW_TOOLS: ToolDef[] = [
     inputSchema: {
       flow: FLOW_NAME_ALIAS,
       flowName: z.string().describe('Flow file name to heal (from reticle_flow{action:"list"}).'),
-      apply: z.boolean().optional(),
+      apply: z.boolean().optional().describe('Write the rebind. Omit to see the proposal only.'),
       confirmDangerous: confirmDangerousArg('this heal replay'),
       sessionId: z
         .string()
@@ -974,13 +949,19 @@ async function loadInvoked(
   const seen = new Set<string>([flow.name]);
   while (queue.length > 0) {
     const current = queue.shift();
-    if (current === undefined) continue;
+    if (current === undefined) {
+      continue;
+    }
     for (const step of flattenSteps(current.steps)) {
       const name = step.invoke;
-      if (name === undefined || seen.has(name)) continue;
+      if (name === undefined || seen.has(name)) {
+        continue;
+      }
       seen.add(name);
       const sub = await flows.load(name, projectId);
-      if (!sub.ok || sub.value === undefined) continue;
+      if (!sub.ok || sub.value === undefined) {
+        continue;
+      }
       out.set(name, sub.value);
       queue.push(sub.value);
     }

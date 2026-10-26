@@ -5,7 +5,7 @@
  * happened", these answer "how much, how long, and on what". Nearly all the growth lands here —
  * every new thing worth measuring lands in one of these two shapes.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 
 /**
  * The one-time advisories that point an agent at the platform and the Harness, by kind. Closed: a
@@ -14,9 +14,9 @@ import { z } from 'zod';
 export const AgentNudgeKind = {
   /** Unlinked, after the first verdict: `reticle connect` keeps it and lets the Harness test the app. */
   CONNECT: 'connect',
-  /** Linked, below the Harness's coverage: close the named gaps. */
+  /** An older build's "close the gaps" advisory. No longer sent: the Harness has no coverage gate. */
   CLOSE_GAPS: 'close_gaps',
-  /** Linked, at the Harness's coverage with the Harness off: the user can switch it on. */
+  /** Linked, with the Harness off: the user can switch it on. */
   SWITCH_ON: 'switch_on',
   /** Harness on, and the agent is driving a long journey by hand: hand it to explore. */
   EXPLORE: 'explore',
@@ -273,7 +273,7 @@ export const SessionSummarySchema = z.object({
    * `toolCounts` reports five useful calls and five retries of one failing call identically, and
    * those are opposite facts: engagement versus an agent stuck. Only tools actually repeated appear.
    */
-  consecutiveRepeats: z.record(z.number().int().positive()).optional(),
+  consecutiveRepeats: z.record(z.string(), z.number().int().positive()).optional(),
   /**
    * Actions driven with no verdict after them — the signature of the loop breaking mid-task.
    *
@@ -321,6 +321,17 @@ export const SessionSummarySchema = z.object({
    * difference between a smooth install and one that needed a second step nobody documented.
    */
   msToFirstApp: z.number().int().nonnegative().optional(),
+  /**
+   * The SDK version of the last page that connected to this daemon, from its HELLO. Our own
+   * release number, or `other`. Absent when no page announced one.
+   */
+  sdkVersion: z.string().min(1).max(32).optional(),
+  /**
+   * Tool calls made before the first app connected. Session lifetime, like `appConnects`: read the
+   * last row, never sum. Absent when there were none. With `appConnects: 0`, it is an agent that
+   * worked against a daemon with no app, which sends no verdict and often no refusal.
+   */
+  toolCallsBeforeApp: z.number().int().nonnegative().optional(),
   /**
    * What state the AGENT's work was in when the session ended. Absent on a periodic flush.
    *
@@ -420,10 +431,10 @@ export const SessionSummarySchema = z.object({
    * `hudJourneyCut`. `hudSlides` counts how often each rail slide was shown, by its id. Every key
    * is a control or slide id Reticle authored: names, never values.
    */
-  hudControls: z.record(z.number()).optional(),
-  hudViewMs: z.record(z.number()).optional(),
-  hudPanelMs: z.record(z.number()).optional(),
-  hudSlides: z.record(z.number()).optional(),
+  hudControls: z.record(z.string(), z.number()).optional(),
+  hudViewMs: z.record(z.string(), z.number()).optional(),
+  hudPanelMs: z.record(z.string(), z.number()).optional(),
+  hudSlides: z.record(z.string(), z.number()).optional(),
   hudJourney: z.array(z.string().max(64)).max(60).optional(),
   hudJourneyCut: z.literal(true).optional(),
   /**
@@ -431,13 +442,15 @@ export const SessionSummarySchema = z.object({
    * Whether a connect or an explore followed is read beside it: `cli_command_run` for `connect`, and
    * `toolCounts` / `toolParams` for `reticle_verify`'s explore. Windowed; absent when none was shown.
    */
-  nudgesShown: z.record(z.nativeEnum(AgentNudgeKind), z.number().int().positive()).optional(),
+  nudgesShown: z
+    .partialRecord(z.nativeEnum(AgentNudgeKind), z.number().int().positive())
+    .optional(),
   /**
-   * Harness drives refused for coverage below the gate, by coverage bucket (`CoverageBucket`).
-   * Windowed; absent when none was refused.
+   * Harness drives an older build refused for low coverage, by coverage bucket (`CoverageBucket`).
+   * No longer sent: the Harness has no coverage gate. Kept so an older daemon's events still parse.
    */
   harnessRefusedCoverage: z
-    .record(z.nativeEnum(CoverageBucket), z.number().int().positive())
+    .partialRecord(z.nativeEnum(CoverageBucket), z.number().int().positive())
     .optional(),
   /** Was this a clean shutdown, or a periodic flush of a still-running session? */
   final: z.boolean(),

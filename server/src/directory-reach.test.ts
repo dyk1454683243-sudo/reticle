@@ -309,12 +309,18 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'facts',
     'identity',
     'impact',
+    // A production nonce decides whether a HELLO opens a production session, and with what scope.
+    'production',
+    // Whether a session may follow its own navigation to an origin the bridge was not built with.
+    'origin',
     'session',
     'telemetry',
     'version',
   ],
   capsule: ['dir', 'fs'],
   cli: [
+    // `reticle status` (status-fields.ts) prints its facts through the renderer in `status`.
+    'status',
     // `doctor` prints, per agent, whether its prompt hook is installed: `hook` holds that table.
     'hook',
     // `reticle try` asks the platform for its free drive through the same call the HUD's Run
@@ -379,15 +385,13 @@ const REACHES_FOR: Record<string, readonly string[]> = {
   // `dir` for DRIVE_RECORD_SUFFIX, as `telemetry` below: the unsent-run count read a refused
   // drive's `.drive.json` as a run, so `reticle sync` and the dashboard asked for a sync that had
   // nothing to send, forever.
-  cloud: ['cli', 'dir', 'fs', 'hooks', 'intent'],
+  // `journal` for the agent hooks' records a synced run takes its model and closing claim from.
+  // `journal` imports nothing from `cloud`, so this adds no mutual pair.
+  cloud: ['cli', 'dir', 'fs', 'hooks', 'intent', 'journal'],
   command: [
     'answers',
     // `reticle hook`, dispatched first in `cli.ts` so that telemetry never sees a prompt.
     'hook',
-    // Rendering `status` for a person, rather than only logging it as an event. Out of `cli.ts`
-    // because that file is a composition root already close to the cap, and because a pure
-    // renderer is testable in a way a branch inside a command is not.
-    'status',
     // `serve`, `stop` and `restart`, lifted out of cli.ts when that file reached the thousand-line
     // cap with zero headroom. One idea -- does a daemon exist, and did the command that changed
     // that report what is actually the case -- so it moved as a unit rather than by line count.
@@ -403,7 +407,6 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'launch',
     'license',
     'mcp',
-    'prior',
     'resolve',
     'init',
     /**
@@ -420,7 +423,6 @@ const REACHES_FOR: Record<string, readonly string[]> = {
      */
     'setup',
     'telemetry',
-    'update',
   ],
   // `exhaustive` is crawl's mode: the explorer and ledger it runs, the fill values the harness
   // already chooses (and the RETICLE_SECRET_* names replay reads), and the mocks that break a write.
@@ -483,15 +485,20 @@ const REACHES_FOR: Record<string, readonly string[]> = {
   /**
    * `reticle hook prompt`: the agent's prompt hook. It finds the project from the folder the
    * prompt was sent in (`config`), and keeps the prompt with the one recorder `reticle_intent`
-   * uses (`intent`), so the two writers cannot keep the request in two shapes.
+   * uses (`intent`), so the two writers cannot keep the request in two shapes. It writes
+   * `.reticle/.gitignore` with the daemon's own rule (`on-disk`, reading the old file through `fs`),
+   * because the hook can run before any daemon has, and a prompt must never land unignored.
    */
-  hook: ['config', 'intent'],
+  // `journal` for the episode log's record version: the post-tool hook writes into the same files.
+  // `journal` imports nothing from `hook`, so this adds no mutual pair.
+  hook: ['config', 'fs', 'intent', 'journal', 'on-disk'],
   // What a run artifact is FOR once it exists -- stored, compared, and read back as established
   // fact -- as against the rest of `runs`, which produces one. Named `artifact`, singular, and it
   // must stay singular: `core/src/artifacts` is a different package and a different node, and
   // "correcting" the spelling would give two directories one basename, which is how the reach
   // graph silently collapsed `cli/cloud` into `features/cloud` with every test still passing.
-  artifact: ['dir', 'flows', 'fs'],
+  // `hooks` for the episode a run belongs to (`episode-stamp.ts`, a leaf that imports nothing).
+  artifact: ['dir', 'flows', 'fs', 'hooks'],
   // `reticle login` and what it leaves on the machine: the credential store, the signed-in
   // session, and the browser device flow. Named `auth` and deliberately NOT `cloud`, though every
   // file in it is about the cloud -- `features/cloud` already owns that basename, and the reach
@@ -564,6 +571,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     // by the next push the drive's own tool calls make.
     'harness',
     'human',
+    // The listing and each verdict compare the page SDK with this daemon's own version.
+    'identity',
     'impact',
     'input',
     'journal',
@@ -571,6 +580,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'ports',
     'presence',
     'prior',
+    // A production session passes every act through the production policy before it is sent.
+    'production',
     'recall',
     'resolve',
     'telemetry',
@@ -633,7 +644,9 @@ const REACHES_FOR: Record<string, readonly string[]> = {
    * is why setup no longer reaches bridge, proxy or telemetry at all — those three reaches were
    * these two files and nothing else.
    */
-  init: ['binding', 'bridge', 'bringup', 'proxy', 'setup', 'telemetry', 'terminal'],
+  // `hook` for `hookBinFor`: the bin init writes into each agent hook, the same one the hook's fast
+  // path runs from. `hook` imports nothing from `init`, so this adds no mutual pair.
+  init: ['binding', 'bridge', 'bringup', 'hook', 'proxy', 'setup', 'telemetry', 'terminal'],
   /**
    * A file changed: which flows must re-verify, what the gate does about it, and how a
    * save-heavy editor's burst becomes one flush. Four files that import nothing whatsoever,
@@ -760,6 +773,9 @@ const REACHES_FOR: Record<string, readonly string[]> = {
   // the goal check next door and is handed its tools, so like `script` it reaches nothing else.
   explore: ['harness'],
   tools: [
+    // The episode log: every call, its result and its effect, written at the one dispatch point.
+    // `journal` imports nothing from `tools`, so this adds no mutual pair.
+    'journal',
     // What an agent's own call is shaped into on the way out (compact envelope, notices). A leaf:
     // `agent` imports nothing back, so this adds no mutual pair.
     'agent',
@@ -767,6 +783,9 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'dev-server',
     // `reticle_coverage { app: true }` folds a session into the app-wide ledger.
     'exhaust',
+    // `reticle_map` reads each session's journal as driven steps. A leaf: `app-graph` imports
+    // nothing from this package, so this adds no mutual pair.
+    'app-graph',
     'hooks',
     'navigation',
     'lifetime',
@@ -809,6 +828,8 @@ const REACHES_FOR: Record<string, readonly string[]> = {
     'oracles',
     'pool',
     'prior',
+    // A production drive judges a native click too, and its lease asks the service for a ticket.
+    'production',
     'project',
     'read',
     'recording',
@@ -897,7 +918,9 @@ describe('the directories in this package know only what they are allowed to kno
     const added: string[] = [];
     for (const [one, targets] of found) {
       for (const other of targets) {
-        if (!(REACHES_FOR[one] ?? []).includes(other)) added.push(`${one} -> ${other}`);
+        if (!(REACHES_FOR[one] ?? []).includes(other)) {
+          added.push(`${one} -> ${other}`);
+        }
       }
     }
     expect(
@@ -916,7 +939,9 @@ describe('the directories in this package know only what they are allowed to kno
     const stale: string[] = [];
     for (const [one, targets] of Object.entries(REACHES_FOR)) {
       for (const other of targets) {
-        if (true !== found.get(one)?.has(other)) stale.push(`${one} -> ${other}`);
+        if (true !== found.get(one)?.has(other)) {
+          stale.push(`${one} -> ${other}`);
+        }
       }
     }
     expect(

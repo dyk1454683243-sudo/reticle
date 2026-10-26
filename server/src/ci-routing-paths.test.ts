@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REPO_ROOT } from './machine/repo-root.js';
@@ -199,16 +199,37 @@ describe('the CI router only names paths that exist', () => {
 // OFF, so a new adapters/realm/* ran almost nothing before merge. A large diff must not drop a
 // matching file at the start either.
 describe('CI routing decisions', () => {
+  const ROUTER_TIMEOUT_MS = 120_000;
   const route = (paths: string[]): Record<string, string> => {
     const temporary = mkdtempSync(join(tmpdir(), 'reticle-ci-routing-'));
     const outputPath = join(temporary, 'output');
     try {
-      execFileSync(process.execPath, [ROUTER], {
-        input: `${paths.join('\n')}\n`,
-        encoding: 'utf8',
-        cwd: REPO_ROOT,
-        env: { ...process.env, GITHUB_OUTPUT: outputPath },
-      });
+      // The paths go in as a FILE on stdin, not as `input`. With `input`, spawnSync feeds the
+      // child through a socket, and on macOS a 20,000-path write stalled there: both processes
+      // sat at 0% CPU and the pre-commit hook hung for 30 minutes. A file always reaches EOF.
+      const inputPath = join(temporary, 'paths');
+      writeFileSync(inputPath, `${paths.join('\n')}\n`);
+      const stdin = openSync(inputPath, 'r');
+      try {
+        execFileSync(process.execPath, [ROUTER], {
+          stdio: [stdin, 'pipe', 'pipe'],
+          encoding: 'utf8',
+          cwd: REPO_ROOT,
+          env: { ...process.env, GITHUB_OUTPUT: outputPath },
+          // A hang guard, not a duration assert: execFileSync blocks the event loop, so the
+          // vitest timeout cannot fire while it runs.
+          timeout: ROUTER_TIMEOUT_MS,
+        });
+      } catch (error) {
+        if ('ETIMEDOUT' === (error as { code?: unknown }).code) {
+          throw new Error(
+            `${ROUTER} did not finish in ${String(ROUTER_TIMEOUT_MS)} ms for ${String(paths.length)} paths, so it hangs`,
+          );
+        }
+        throw error;
+      } finally {
+        closeSync(stdin);
+      }
       const flags: Record<string, string> = {};
       for (const line of readFileSync(outputPath, 'utf8').trim().split('\n')) {
         const [key, value] = line.split('=');
@@ -262,6 +283,15 @@ describe('CI routing decisions', () => {
     });
   });
 
+  it('runs the bench before merge for a tool-surface change, and not for other server code', () => {
+    // A tool description or schema is charged to the agent on every turn. The bench ran only in
+    // the merge queue, so a pull request that changed the price got no number before review.
+    expect(route(['server/src/surface/tools/act-tools.ts']).toolsurface).toBe('true');
+    expect(route(['core/src/wire/tool-names.ts']).toolsurface).toBe('true');
+    expect(route(['server/src/command/cli/setup-mcp-cli.ts']).toolsurface).toBe('false');
+    expect(route(['adapters/realm/browser/src/index.ts']).toolsurface).toBe('false');
+  });
+
   it('runs break jobs when init changes', () => {
     expect(route(['init/src/run.ts']).break).toBe('true');
   });
@@ -288,7 +318,7 @@ describe('CI routing decisions', () => {
       ...Array.from({ length: 20000 }, (_, i) => `docs/changed-${String(i)}.md`),
     ];
     expect(route(paths)).toMatchObject({ e2e: 'true', install: 'true', bench: 'true' });
-  });
+  }, 180_000);
 
   it('turns every tier on for a new adapters/realm that no tier names', () => {
     // Assembled so the literal directory is not a tracked path this test invents on disk.

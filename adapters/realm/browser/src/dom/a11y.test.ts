@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getAccessibleName, isVisible } from './a11y.js';
+import { getAccessibleName } from './a11y.js';
+import { isVisible } from './visibility.js';
 import { installShadowRegistry } from './shadow-registry.js';
 import { matchQuery } from './query.js';
 
@@ -185,9 +186,13 @@ describe('own hiding short-circuits ancestor metadata', () => {
       const outer = document.createElement('div');
       const inner = document.createElement('div');
       const button = document.createElement('button');
-      if ('hidden' === signal) button.hidden = true;
-      else if ('aria-hidden' === signal) button.setAttribute('aria-hidden', 'true');
-      else button.style.display = 'none';
+      if ('hidden' === signal) {
+        button.hidden = true;
+      } else if ('aria-hidden' === signal) {
+        button.setAttribute('aria-hidden', 'true');
+      } else {
+        button.style.display = 'none';
+      }
       inner.append(button);
       outer.append(inner);
       document.body.append(outer);
@@ -275,7 +280,9 @@ describe('slotted content inherits visibility from where it is slotted', () => {
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML =
       '<details><summary><slot name="label"></slot></summary><slot></slot></details>';
-    if (open) shadow.querySelector('details')?.setAttribute('open', '');
+    if (open) {
+      shadow.querySelector('details')?.setAttribute('open', '');
+    }
     const kept = document.createElement('span');
     kept.slot = 'label';
     kept.textContent = 'Advanced';
@@ -500,6 +507,59 @@ describe('fieldset named by its legend', () => {
     legend.textContent = 'Shipping address';
     fieldset.append(legend);
     expect(getAccessibleName(fieldset)).toBe('Override');
+  });
+});
+
+describe('table named by its caption (#1685)', () => {
+  it('names a table from its direct-child caption', () => {
+    const table = document.createElement('table');
+    const caption = document.createElement('caption');
+    caption.textContent = 'Open orders';
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.textContent = '1';
+    tr.append(td);
+    table.append(caption, tr);
+    expect(getAccessibleName(table)).toBe('Open orders');
+  });
+
+  it('does not pick up a caption nested in a child element', () => {
+    const table = document.createElement('table');
+    const wrapper = document.createElement('thead');
+    const caption = document.createElement('caption');
+    caption.textContent = 'Nested';
+    wrapper.append(caption);
+    table.append(wrapper);
+    expect(getAccessibleName(table)).toBe('');
+  });
+
+  it('still prefers aria-label over the caption', () => {
+    const table = document.createElement('table');
+    table.setAttribute('aria-label', 'Override');
+    const caption = document.createElement('caption');
+    caption.textContent = 'Open orders';
+    table.append(caption);
+    expect(getAccessibleName(table)).toBe('Override');
+  });
+});
+
+describe('figure named by its figcaption (#1685)', () => {
+  it('names a figure from its direct-child figcaption', () => {
+    const figure = document.createElement('figure');
+    const figcaption = document.createElement('figcaption');
+    figcaption.textContent = 'Architecture overview';
+    const img = document.createElement('img');
+    figure.append(img, figcaption);
+    expect(getAccessibleName(figure)).toBe('Architecture overview');
+  });
+
+  it('still prefers aria-label over the figcaption', () => {
+    const figure = document.createElement('figure');
+    figure.setAttribute('aria-label', 'Override');
+    const figcaption = document.createElement('figcaption');
+    figcaption.textContent = 'Architecture overview';
+    figure.append(figcaption);
+    expect(getAccessibleName(figure)).toBe('Override');
   });
 });
 
@@ -764,8 +824,11 @@ describe('visibility inside overflow clipping ancestors', () => {
     'clips a %s child whose containing block is the clipping ancestor',
     (position) => {
       const { clip, child } = mount();
-      if ('absolute' === position) clip.style.position = 'relative';
-      else clip.style.transform = 'translateZ(0)';
+      if ('absolute' === position) {
+        clip.style.position = 'relative';
+      } else {
+        clip.style.transform = 'translateZ(0)';
+      }
       child.style.position = position;
       Object.defineProperty(child, 'offsetParent', { value: clip });
       expect(isVisible(child)).toBe(false);
@@ -958,14 +1021,112 @@ describe('a page an open overlay hid from assistive tech', () => {
     document.body.innerHTML =
       '<header aria-hidden="true" data-aria-hidden="true"><button id="p">omar-blog</button></header>';
     const button = document.getElementById('p');
-    if (null === button) throw new Error('no button');
+    if (null === button) {
+      throw new Error('no button');
+    }
     expect(isVisible(button)).toBe(true);
   });
 
   it('while the app’s own aria-hidden still hides', () => {
     document.body.innerHTML = '<div aria-hidden="true"><button id="q">Hidden</button></div>';
     const button = document.getElementById('q');
-    if (null === button) throw new Error('no button');
+    if (null === button) {
+      throw new Error('no button');
+    }
     expect(isVisible(button)).toBe(false);
+  });
+});
+
+describe('visually hidden (sr-only) text', () => {
+  // Screen-reader-only text is on the page for assistive tech and paints nothing, so a `visible`
+  // check must not pass on it, while a presence check and the accessible name still find it.
+  // jsdom computes `clip` only in its comma form, which is also how browsers serialize it.
+  function srOnly(apply: (el: HTMLElement) => void): HTMLElement {
+    const el = document.createElement('p');
+    el.textContent = 'Saved';
+    el.style.position = 'absolute';
+    apply(el);
+    document.body.append(el);
+    return el;
+  }
+  function clipOwnOverflow(el: HTMLElement): void {
+    el.style.overflow = 'hidden';
+    el.style.overflowX = 'hidden';
+    el.style.overflowY = 'hidden';
+  }
+  function boxed(el: HTMLElement, width: number, height: number): void {
+    el.getBoundingClientRect = () => new DOMRect(0, 0, width, height);
+    el.getClientRects = () => [new DOMRect(0, 0, width, height)] as unknown as DOMRectList;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it.each([
+    [
+      'clip: rect(0px, 0px, 0px, 0px)',
+      (el: HTMLElement) => (el.style.clip = 'rect(0px, 0px, 0px, 0px)'),
+    ],
+    [
+      'clip: rect(1px, 1px, 1px, 1px)',
+      (el: HTMLElement) => (el.style.clip = 'rect(1px, 1px, 1px, 1px)'),
+    ],
+    ['clip-path: inset(50%)', (el: HTMLElement) => (el.style.clipPath = 'inset(50%)')],
+    ['clip-path: inset(0 50%)', (el: HTMLElement) => (el.style.clipPath = 'inset(0 50%)')],
+    [
+      'a 1x1 box clipping its overflow',
+      (el: HTMLElement) => {
+        clipOwnOverflow(el);
+        boxed(el, 1, 1);
+      },
+    ],
+  ])('reads %s as not visible but present', (_name, apply) => {
+    const el = srOnly(apply);
+    expect(isVisible(el)).toBe(false);
+    expect(matchQuery({ text: 'Saved' }, 'visible').count).toBe(0);
+    expect(matchQuery({ text: 'Saved' }).count).toBe(1);
+  });
+
+  it('keeps an sr-only label as the accessible name of its control', () => {
+    const button = document.createElement('button');
+    const label = document.createElement('span');
+    label.textContent = 'Close';
+    label.style.position = 'absolute';
+    label.style.clip = 'rect(0px, 0px, 0px, 0px)';
+    button.append(label);
+    document.body.append(button);
+    expect(isVisible(label)).toBe(false);
+    expect(getAccessibleName(button)).toBe('Close');
+  });
+
+  it.each([
+    [
+      'clip on a box that is not positioned',
+      (el: HTMLElement) => {
+        el.style.position = 'static';
+        el.style.clip = 'rect(0px, 0px, 0px, 0px)';
+      },
+    ],
+    [
+      'clip that leaves an area',
+      (el: HTMLElement) => (el.style.clip = 'rect(0px, 40px, 20px, 0px)'),
+    ],
+    ['clip with auto edges', (el: HTMLElement) => (el.style.clip = 'rect(auto, auto, auto, auto)')],
+    ['clip-path: inset(10%)', (el: HTMLElement) => (el.style.clipPath = 'inset(10%)')],
+    ['clip-path inset in pixels', (el: HTMLElement) => (el.style.clipPath = 'inset(50px)')],
+    ['a 1x1 box that does not clip', (el: HTMLElement) => boxed(el, 1, 1)],
+    [
+      'a 2x2 box clipping its overflow',
+      (el: HTMLElement) => {
+        clipOwnOverflow(el);
+        boxed(el, 2, 2);
+      },
+    ],
+  ])('keeps %s visible', (_name, apply) => {
+    expect(isVisible(srOnly(apply))).toBe(true);
   });
 });

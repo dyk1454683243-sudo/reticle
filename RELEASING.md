@@ -60,12 +60,14 @@ pnpm gate:install-sandbox                       #    ~10 min, Docker: the publis
 pnpm gate:worktrees                             #    ~20s: two agents in two git worktrees of one app each
                                                 #    reach only their own tab, through the real daemon
 pnpm lint:docs                                  #    every documented command still parses; see below
-claude plugin validate ./plugin                 #    the published Claude Code plugin still resolves
+claude plugin validate ./plugins/reticle                 #    the published Claude Code plugin still resolves
 npx skills add reticlehq/reticle -l             #    the published skills are all still discoverable
 
 node scripts/set-version.mjs 3.2.0              # 3. every artifact that carries the number, in lockstep
 pnpm install --lockfile-only                   #    …then reconcile the lockfile
 ```
+
+**Then write this release's update notice** in `server/package.json`: `reticle.changelog` (one paragraph: what changed for a user, and a pointer to MIGRATION.md when there is a section for this release) and `reticle.breakingChanges` (one line per breaking change in THIS release, else `[]`). Every installed daemon reads both from npm and shows them as the update notice (`update-checker.ts`). Nothing else writes them, so a release that skips this step tells every user the previous release's news: 3.7.0 shipped with 3.6's text and its breaking change.
 
 **Three of those gates were missing from this list until 2026-09-11**, and the two that matter most were the ones this release exists for: `gate:conformance`, which is the only check that this implementation still answers its own published specification, and `test:e2e:desktop`, which is the only one that starts a desktop runtime at all. `gate:install` was absent too, and it is the gate whose absence let a release ship a Next.js install that connected 0% of the time. A release checklist that names five gates while the repository has eight is a checklist that quietly narrows what "all gates green" means. `release-gates-are-listed.test.ts` now fails when a gate is added without a decision about whether a release needs it.
 

@@ -69,11 +69,13 @@ Everything here is published to [docs.reticle.sh](https://docs.reticle.sh) by `d
 | [multi-agent-testing.md](multi-agent-testing.md) | more than one agent on one app |
 | [human-control.md](human-control.md) | taking the wheel back from the agent |
 | [deploy-checks.md](deploy-checks.md) | running Reticle against a deployed build |
+| [production-mode.md](production-mode.md) | driving a live site under a policy that refuses payments, deletions and invites |
 | [token-efficiency.md](token-efficiency.md) | why it costs less than a screenshot loop |
 | [benchmarks.md](benchmarks.md) | how the numbers were measured, including where Reticle loses |
 | [vs-playwright-mcp.mdx](vs-playwright-mcp.mdx) | outside-in vs inside-out, and when Playwright is right |
 | [vs-chrome-devtools-mcp.mdx](vs-chrome-devtools-mcp.mdx) | cheaper per look, catches less: the trade, measured |
 | [vs-screenshots.mdx](vs-screenshots.mdx) | why a better vision model does not fix a non-visual bug |
+| [prompt-capture.md](prompt-capture.md) | the prompt hook `init` installs: what it keeps, what leaves, and every switch to turn it off |
 | [what-is-recorded.md](what-is-recorded.md) | what Reticle keeps, what is redacted, and what it takes for any of it to leave your machine |
 | [telemetry.md](telemetry.md) | what is collected, and how to turn it off |
 | [local-registry.md](local-registry.md) | installing an unpublished build |
@@ -92,8 +94,8 @@ Everything here is published to [docs.reticle.sh](https://docs.reticle.sh) by `d
 | [adapters.md](adapters.md) | what an adapter is, the three kinds, and how to write one |
 | [state-files.md](state-files.md) | what to do when a file on disk came from a different version of Reticle |
 | [system-map.md](system-map.md) | how a tool call reaches the app, and which failures are silent |
-| [telemetry-contract.md](telemetry-contract.md) | required reading before touching anything that emits |
-| [telemetry-events.mdx](telemetry-events.mdx) | every event kind and its payload, and the question each one exists to answer |
+| [contributing/telemetry/contract.md](../contributing/telemetry/contract.md) | required reading before touching anything that emits |
+| [contributing/telemetry/events.md](../contributing/telemetry/events.md) | every event kind and its payload, when it is sent, why, and an example |
 | [first-drive.md](first-drive.md) | clone to a real verdict in about fifteen minutes, and the traps on the way |
 | [debugging.md](debugging.md) | debugging Reticle itself: the four signals and what each answers |
 | [fixtures.md](fixtures.md) | the sibling `reticle-fixtures` repo: install complexity, not regressions |

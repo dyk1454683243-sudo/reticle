@@ -18,10 +18,11 @@
  */
 
 import { join } from 'node:path';
+import { AgentRules } from '@reticlehq/core';
 import { mergeMarkedInstruction, AgentRuleStatus, hasManagedBlock } from './agent-rules.js';
 
 /** The instruction files the managed block lives in. Cursor's rule file is regenerated whole. */
-export const RULE_FILES = ['CLAUDE.md', 'AGENTS.md'] as const;
+export const RULE_FILES = AgentRules.FILES;
 
 interface RuleFileIo {
   read: (path: string) => string | null;

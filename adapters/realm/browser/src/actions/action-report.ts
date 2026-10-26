@@ -9,6 +9,7 @@ import { QueryBy, type SettleReason } from '@reticlehq/core';
 import { elementsMatching } from '@/dom/query.js';
 import { getAccessibleName, getRole, isSensitiveField } from '@/dom/a11y.js';
 import { identifyComponent } from '@/registry/stores/adapters.js';
+import { isReticleUi } from '@/dom/dom-ignore.js';
 
 /**
  * Best-effort evidence of whether/why an action landed, so the agent can separate
@@ -20,7 +21,7 @@ export interface ActionEffect {
   dispatched: true;
   /** Ref resolved to a still-connected element at read time. */
   targetMatched: boolean;
-  /** a11y isVisible(el) at the start of the action. */
+  /** visibility isVisible(el) at the start of the action. */
   visible: boolean;
   /** Not disabled / aria-disabled at the start of the action. */
   enabled: boolean;
@@ -86,6 +87,34 @@ export interface ActionEffect {
    * the box.
    */
   alreadyAtValue?: true;
+  /**
+   * How many `<canvas>` elements were on screen when the action settled. OMITTED when none.
+   *
+   * A canvas draws its output as pixels, and no channel here reads pixels. The daemon uses this to
+   * say so for the run (`pixels-unobserved`) rather than let a quiet DOM read as a correct drawing.
+   */
+  canvases?: number;
+}
+
+const CANVAS_SELECTOR = 'canvas';
+
+/** Canvases with a size, inside the viewport, that are the app's own (not Reticle's UI). */
+export function visibleCanvases(doc: Document): number {
+  const width = doc.defaultView?.innerWidth ?? 0;
+  const height = doc.defaultView?.innerHeight ?? 0;
+  let count = 0;
+  for (const canvas of doc.querySelectorAll(CANVAS_SELECTOR)) {
+    if (isReticleUi(canvas)) {
+      continue;
+    }
+    const box = canvas.getBoundingClientRect();
+    const sized = box.width > 0 && box.height > 0;
+    const onScreen = box.bottom > 0 && box.right > 0 && box.top < height && box.left < width;
+    if (sized && onScreen) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 export interface ActionResult {
@@ -169,11 +198,17 @@ export function anchorOf(el: Element): CapturedAnchor {
     out.testid = testid;
     // A replay takes the first match, so a shared test id would land on another element.
     const shared = elementsMatching({ by: QueryBy.TESTID, value: testid }).length;
-    if (1 < shared) out.testidOf = shared;
+    if (1 < shared) {
+      out.testidOf = shared;
+    }
   }
   const component = info?.componentStack[0];
-  if (component !== undefined) out.component = component;
-  if (info?.source !== undefined) out.source = info.source;
+  if (component !== undefined) {
+    out.component = component;
+  }
+  if (info?.source !== undefined) {
+    out.source = info.source;
+  }
   // Reported INDEPENDENTLY, never all-or-nothing: otherwise an element with a role and no accessible
   // name — an icon button, a clickable div, a control labelled by an SVG — comes back with no identity
   // at all once identifyComponent (React-specific) also finds nothing. Two features silently degrade
@@ -184,9 +219,15 @@ export function anchorOf(el: Element): CapturedAnchor {
   // will anchor a step that way. But it is real information, and reporting it beats reporting nothing.
   const role = getRole(el);
   const name = getAccessibleName(el);
-  if (role.length > 0) out.role = role;
-  if (name.length > 0) out.name = name;
-  if (isSensitiveField(el)) out.secret = true;
+  if (role.length > 0) {
+    out.role = role;
+  }
+  if (name.length > 0) {
+    out.name = name;
+  }
+  if (isSensitiveField(el)) {
+    out.secret = true;
+  }
   if (role.length > 0 && name.length > 0) {
     // A sidebar link and a card link both named "Transactions": without the position, the recorded
     // step was ambiguous on every replay.
@@ -222,15 +263,35 @@ export const result = (
   // to find this element next run, the component/source says where it is written. A step is anchored
   // by the testid when it has one (see the flow compiler) and that is unchanged — what changed is
   // that having a testid no longer erases the answer to "which file do I open?".
-  if (anchor.testid !== undefined) base.testid = anchor.testid;
-  if (anchor.testidOf !== undefined) base.testidOf = anchor.testidOf;
-  if (anchor.component !== undefined) base.component = anchor.component;
-  if (anchor.source !== undefined) base.source = anchor.source;
-  if (anchor.role !== undefined) base.role = anchor.role;
-  if (anchor.name !== undefined) base.name = anchor.name;
-  if (anchor.nth !== undefined) base.nth = anchor.nth;
-  if (anchor.of !== undefined) base.of = anchor.of;
-  if (anchor.secret !== undefined) base.secret = anchor.secret;
-  if (warning !== undefined) base.warning = warning;
+  if (anchor.testid !== undefined) {
+    base.testid = anchor.testid;
+  }
+  if (anchor.testidOf !== undefined) {
+    base.testidOf = anchor.testidOf;
+  }
+  if (anchor.component !== undefined) {
+    base.component = anchor.component;
+  }
+  if (anchor.source !== undefined) {
+    base.source = anchor.source;
+  }
+  if (anchor.role !== undefined) {
+    base.role = anchor.role;
+  }
+  if (anchor.name !== undefined) {
+    base.name = anchor.name;
+  }
+  if (anchor.nth !== undefined) {
+    base.nth = anchor.nth;
+  }
+  if (anchor.of !== undefined) {
+    base.of = anchor.of;
+  }
+  if (anchor.secret !== undefined) {
+    base.secret = anchor.secret;
+  }
+  if (warning !== undefined) {
+    base.warning = warning;
+  }
   return base;
 };

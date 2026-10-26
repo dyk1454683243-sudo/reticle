@@ -512,7 +512,7 @@ describe('a page the daemon turned away', () => {
     await runSetupPhases(INPUT, fx);
     const all = notes.join('\n');
     expect(all).toContain('REFUSED the last page');
-    expect(all).toContain('SDK IS in the page');
+    expect(all).toContain('references the SDK');
     expect(all).not.toContain('never dialled the bridge');
   });
 });
@@ -922,7 +922,7 @@ describe('a failed connect leads with what the daemon knows', () => {
     });
     await runSetupPhases(INPUT, fx);
     const whyAt = notes.findIndex((n) => n.includes('REFUSED the last page'));
-    const pageAt = notes.findIndex((n) => n.includes('SDK IS in the page'));
+    const pageAt = notes.findIndex((n) => n.includes('references the SDK'));
     expect(whyAt).toBeGreaterThanOrEqual(0);
     expect(pageAt).toBeGreaterThanOrEqual(0);
     expect(whyAt).toBeLessThan(pageAt);

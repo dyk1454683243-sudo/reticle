@@ -15,7 +15,7 @@
  * the contract, not the reasoning. A reader looking for "what may I write" is in the right file; a
  * reader looking for "what does it decide" is one package out.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { ElementQuerySchema, type ElementQuery } from '@/wire/types.js';
 import { ElementState } from '@/wire/constants/constants.js';
 import {
@@ -24,7 +24,7 @@ import {
   sameCompareSource,
   type CompareSource,
 } from './compare-source.js';
-import { PredicateKind } from '@/verdict/consequence.js';
+import { PredicateKind, SettledChannel } from '@/verdict/consequence.js';
 import { propertyAssertionSchema, type PropertyAssertion } from './property-assertion.js';
 
 export type Predicate =
@@ -120,7 +120,7 @@ export type Predicate =
       equals?: unknown;
       satisfies?: PropertyAssertion;
     }
-  | { kind: typeof PredicateKind.SETTLED; quietMs?: number }
+  | { kind: typeof PredicateKind.SETTLED; quietMs?: number; channel?: SettledChannel }
   | {
       kind: typeof PredicateKind.COMPARE;
       left: CompareSource;
@@ -178,13 +178,14 @@ const PREDICATE_ALIASES: Readonly<Record<string, Readonly<Record<string, string>
   // no other meaning here. Observed twice in one drive on a real app, and each rejection cost a round
   // trip AND produced no verdict — a composite is what an agent reaches for precisely when it has two
   // things to prove at once, so failing it is expensive at the worst moment.
-  [PredicateKind.ALL_OF]: { of: 'predicates' },
-  [PredicateKind.ANY_OF]: { of: 'predicates' },
+  // The kind's own name as the key (`{ allOf: [...] }`) is the shorthand `inferKind` reads.
+  [PredicateKind.ALL_OF]: { of: 'predicates', allOf: 'predicates' },
+  [PredicateKind.ANY_OF]: { of: 'predicates', anyOf: 'predicates' },
   // `of` on `not` for the same reason it is accepted on the composites above — an agent that learned
   // the spelling one line earlier applies it to the third composite, and `not` was the one that
   // rejected it. The refusal did name `predicate`, but naming a field still costs the round trip
   // that produced no verdict, and the guess is unambiguous: `not` has exactly one child.
-  [PredicateKind.NOT]: { of: 'predicate' },
+  [PredicateKind.NOT]: { of: 'predicate', not: 'predicate' },
 };
 
 /**
@@ -224,6 +225,99 @@ function renameKindSpelling(obj: Record<string, unknown>): Record<string, unknow
 }
 
 /**
+ * Keys that are also the name of a kind. `{ text: "Saved" }` and `{ allOf: [...] }` are what agents
+ * write when they leave out `kind`. The key names the kind, and the alias table maps it to a field.
+ */
+const KIND_NAMED_KEYS: Readonly<Record<string, string>> = {
+  text: PredicateKind.TEXT,
+  allOf: PredicateKind.ALL_OF,
+  anyOf: PredicateKind.ANY_OF,
+  not: PredicateKind.NOT,
+};
+
+/** Each kind and every key it takes: its fields, its aliases and, for `element`, flat query fields. */
+let keysByKind: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+function keysOfEachKind(): ReadonlyMap<string, ReadonlySet<string>> {
+  if (keysByKind !== undefined) {
+    return keysByKind;
+  }
+  const out = new Map<string, ReadonlySet<string>>();
+  for (const option of predicateUnion().options) {
+    const shape = (option as unknown as { shape: Record<string, unknown> }).shape;
+    const kind = String((shape['kind'] as z.ZodLiteral<string>).value);
+    const flat: readonly string[] = PredicateKind.ELEMENT === kind ? ELEMENT_QUERY_FIELDS : [];
+    out.set(
+      kind,
+      new Set([
+        ...Object.keys(shape).filter((key) => 'kind' !== key),
+        ...Object.keys(PREDICATE_ALIASES[kind] ?? {}),
+        ...flat,
+      ]),
+    );
+  }
+  keysByKind = out;
+  return out;
+}
+
+const writtenKeys = (obj: Record<string, unknown>): string[] =>
+  Object.keys(obj).filter((key) => obj[key] !== undefined);
+
+/**
+ * The kind of a predicate written with no `kind`, when its keys fit exactly one kind.
+ *
+ * A key that names a kind (`text`, `allOf`, `anyOf`, `not`) selects that kind, if the kind takes
+ * every other key too. Otherwise the kind is the only one that takes every key. Keys that fit two
+ * kinds (`name` is on `signal` and `animation`) or none give no kind, and the schema refuses them.
+ * This only supplies `kind`: the predicate that results is the one the explicit form gives.
+ */
+function inferKind(obj: Record<string, unknown>): string | undefined {
+  const keys = writtenKeys(obj);
+  if (0 === keys.length) {
+    return undefined;
+  }
+  const kinds = keysOfEachKind();
+  const takesAll = (kind: string): boolean => {
+    const accepted = kinds.get(kind);
+    return accepted !== undefined && keys.every((key) => accepted.has(key));
+  };
+  const named = keys.flatMap((key) => {
+    const kind = KIND_NAMED_KEYS[key];
+    return kind === undefined ? [] : [kind];
+  });
+  if (1 < named.length) {
+    return undefined;
+  }
+  const [byName] = named;
+  if (byName !== undefined) {
+    return takesAll(byName) ? byName : undefined;
+  }
+  const fits = [...kinds.keys()].filter(takesAll);
+  return 1 === fits.length ? fits[0] : undefined;
+}
+
+/** The kind inferred for a predicate written with neither `kind` nor `type`, if any. */
+function kindToInfer(given: Record<string, unknown>): string | undefined {
+  const renamed = renameKindSpelling(given);
+  return renamed['kind'] === undefined ? inferKind(renamed) : undefined;
+}
+
+/** `type` renamed to `kind`, then the kind inferred from the keys when neither was written. */
+function withKind(given: Record<string, unknown>): Record<string, unknown> {
+  const renamed = renameKindSpelling(given);
+  const kind = kindToInfer(given);
+  return kind === undefined ? renamed : { ...renamed, kind };
+}
+
+/** Why a predicate with no `kind` was refused: the keys it had, and the kinds there are. */
+function noKindRefusal(obj: Record<string, unknown>): string {
+  const keys = writtenKeys(obj).map((key) => `\`${key}\``);
+  return (
+    `this predicate has no \`kind\`, and its keys (${keys.length > 0 ? keys.join(', ') : 'none'}) ` +
+    `do not fit exactly one kind. Add \`kind\`: one of ${[...keysOfEachKind().keys()].join(', ')}`
+  );
+}
+
+/**
  * Which aliases a predicate as WRITTEN would have renamed, as `kind.from → to` (and `type → kind`).
  *
  * The parse itself is silent on purpose — it is a preprocess step — so this reads the same table
@@ -239,7 +333,11 @@ export function predicateAliasesUsed(input: unknown, depth = 0): string[] {
   if (given['kind'] === undefined && 'string' === typeof given[KIND_SPELLING]) {
     used.push(`${KIND_SPELLING} → kind`);
   }
-  const obj = renameKindSpelling(given);
+  const inferred = kindToInfer(given);
+  if (inferred !== undefined) {
+    used.push(`(no kind) → kind: "${inferred}"`);
+  }
+  const obj = withKind(given);
   const kind = 'string' === typeof obj['kind'] ? obj['kind'] : '';
   for (const [from, to] of Object.entries(PREDICATE_ALIASES[kind] ?? {})) {
     if (obj[from] !== undefined && obj[to] === undefined) used.push(`${kind}.${from} → ${to}`);
@@ -249,7 +347,7 @@ export function predicateAliasesUsed(input: unknown, depth = 0): string[] {
       if (obj[field] !== undefined) used.push(`element.${field} → query.${field}`);
     }
   }
-  for (const field of ['predicates', 'of', 'predicate']) {
+  for (const field of ['predicates', 'of', 'predicate', 'allOf', 'anyOf', 'not']) {
     const child = obj[field];
     for (const nested of Array.isArray(child) ? child : [child]) {
       used.push(...predicateAliasesUsed(nested, depth + 1));
@@ -259,10 +357,13 @@ export function predicateAliasesUsed(input: unknown, depth = 0): string[] {
 }
 
 /** Rename known aliases before parse; an explicit canonical key always wins. */
-function applyPredicateAliases(input: unknown): unknown {
+function applyPredicateAliases(input: unknown, ctx: z.RefinementCtx): unknown {
   if (typeof input !== 'object' || null === input || Array.isArray(input)) return input;
   const given = input as Record<string, unknown>;
-  const obj = renameKindSpelling(given);
+  const obj = withKind(given);
+  if (obj['kind'] === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: noKindRefusal(obj) });
+  }
   const kind = 'string' === typeof obj['kind'] ? obj['kind'] : '';
   const aliases = PREDICATE_ALIASES[kind];
   let out = obj;
@@ -452,7 +553,7 @@ function predicateUnion() {
       .object({
         kind: z.literal(PredicateKind.SIGNAL),
         name: z.string().optional(),
-        dataMatches: z.record(z.unknown()).optional(),
+        dataMatches: z.record(z.string(), z.unknown()).optional(),
         /**
          * Exact number of matching signals since the action — presence becomes cardinality.
          *
@@ -486,6 +587,7 @@ function predicateUnion() {
       .object({
         kind: z.literal(PredicateKind.SETTLED),
         quietMs: z.number().positive().optional(),
+        channel: z.enum([SettledChannel.NETWORK, SettledChannel.APP]).optional(),
       })
       .strict(),
     z
@@ -636,8 +738,9 @@ export function predicateShapeFor(kind: string): z.ZodRawShape | null {
   for (const option of predicateUnion().options) {
     const shape = (option as unknown as { shape?: Record<string, z.ZodTypeAny> }).shape;
     const literal = shape?.['kind'];
-    const value = (literal as unknown as { _def?: { value?: unknown } } | undefined)?._def?.value;
-    if (value === kind) return shape as z.ZodRawShape;
+    if (literal instanceof z.ZodLiteral && literal.value === kind) {
+      return shape as z.ZodRawShape;
+    }
   }
   return null;
 }

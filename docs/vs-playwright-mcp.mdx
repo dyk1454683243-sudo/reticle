@@ -41,7 +41,7 @@ Reticle is about 2.1x leaner on a large page. The gap comes from what each tool 
 
 This is not a courtesy section. There are real cases where Playwright is the correct choice and Reticle is not.
 
-- **Sites you do not own.** Reticle needs a dev-only SDK in the app. No SDK, no Reticle. Playwright drives anything with a URL, which is the entire point of it.
+- **Sites you do not own.** Reticle is built for an app you own. A leased tab can read the DOM, network, console and routes of any page with nothing installed, but component state, store diffs and the source `file:line` need the SDK in your build. Playwright drives anything with a URL, and that is the entire point of it.
 - **Cross-browser.** Firefox and WebKit are first-class in Playwright. Reticle's real-input and screenshot paths are Chromium-oriented.
 - **True pixels.** A screenshot is the actual rendered frame. A font that failed to load or a compositing glitch shows up there and can be missed by structural reads.
 - **Maturity and ecosystem.** Playwright is a large, battle-tested project with an enormous community. We are not going to pretend otherwise.
@@ -98,9 +98,10 @@ Reticle also has a driven mode (`reticle drive`) that provides real CDP input an
 </Accordion>
 
 <Accordion title="Does Reticle work on a site I do not own?">
-  No. Reticle reads the program from inside the page, which requires a dev-only SDK in the app. No
-  SDK, no Reticle. That is the single hardest boundary between these two tools, and it is why
-  Playwright MCP is the right answer for anything you cannot instrument.
+  Partly. A leased tab gets an injected SDK, so Reticle can read the DOM, network, console and
+  routes of a page with nothing installed. It cannot read component state or registered stores, and
+  it cannot map a node to its source file, because those come from the SDK and the build plugin in
+  your own app. For a site you cannot instrument, Playwright MCP is still the stronger tool.
 </Accordion>
 
 <Accordion title="Is Reticle actually cheaper, or only on the pages you chose?">

@@ -5,6 +5,7 @@ import { ReticleTool } from '@reticlehq/core';
 import { ADVERTISE_ALL_ENV, TOOL_PROFILE_ENV, TOOL_SURFACE } from './tool-surface.js';
 import { TOOLS, type ToolDef, type ToolDeps } from './tools.js';
 import { MAX_BLOCKING_WAIT_MS } from './args/numeric-bounds.js';
+import { mergedNameRedirect } from './merged-name-redirect.js';
 
 /**
  * The two meta-tools are the answer to the per-turn tool-definition tax — they advertise just two
@@ -55,6 +56,17 @@ describe('buildDynamicTools — the dynamic profile meta-tools', () => {
     const listed = await discover?.handler(NO_DEPS, { action: 'list' });
     expect(listed).toEqual(bare);
     expect((listed as { error?: string }).error).toBeUndefined();
+  });
+
+  /*
+   * An agent asked for one tool as `{ name: "…" }` and was refused, which cost it a second call.
+   * `name` is one tool name, the same as `names: [name]`.
+   */
+  it('reticle_tools takes one tool name as `name`, the same as `names`', async () => {
+    const discover = buildDynamicTools(fakeTools).find((t) => t.name === ReticleTool.TOOLS);
+    const one = await discover?.handler(NO_DEPS, { name: 'reticle_alpha' });
+    expect(one).toEqual(await discover?.handler(NO_DEPS, { names: ['reticle_alpha'] }));
+    expect(Object.keys(discover?.inputSchema ?? {})).toContain('name');
   });
 
   it('reticle_tools with names loads full params for known tools and flags unknown ones', async () => {
@@ -291,5 +303,73 @@ describe('reticle_tools shows numeric bounds', () => {
     const label = params.find((p) => 'label' === p.name);
     expect(label?.min).toBeUndefined();
     expect(label?.max).toBeUndefined();
+  });
+});
+
+/**
+ * The meta-tools' own text is the first thing an agent reads about the tools behind them. The flow
+ * recipe skipped `reticle_record { action: "stop" }`, so `reticle_flow_save` refused the recording
+ * that was still running, and both examples named `reticle_network`, which the default surface
+ * answers only with a redirect.
+ */
+describe('the meta-tools teach calls that work', () => {
+  const [tools, run] = buildDynamicTools(TOOLS);
+  const runTool = run?.inputSchema['tool'];
+  const text = `${tools?.description ?? ''} ${runTool?.description ?? ''}`;
+
+  it('stops the recording before it saves the flow', () => {
+    const stop = text.indexOf(`${ReticleTool.RECORD}{action:"stop"}`);
+    expect(stop).toBeGreaterThan(-1);
+    expect(stop).toBeLessThan(text.indexOf(ReticleTool.FLOW_SAVE));
+  });
+
+  it('names no merged tool as an example', () => {
+    const merged = [...text.matchAll(/reticle_[a-z0-9_]+/g)]
+      .map((m) => m[0])
+      .filter((name) => mergedNameRedirect(name) !== undefined);
+    expect(merged).toEqual([]);
+  });
+});
+
+/**
+ * The accepted values of an enum parameter are shown, so the refusal is not the first news (#1775).
+ *
+ * `reticle_session { action: "end", claim }` (a merged name for `reticle_end_session`) takes
+ * `pass | fail | partial`, but the catalogue showed only "What YOU claim this session showed", so an
+ * agent sent a sentence and the call was refused. The values are read off the enum that enforces
+ * them, as numeric bounds are read off the number that enforces them, so no description has to
+ * repeat them and the shown values cannot drift from the checked ones.
+ */
+describe('reticle_tools shows the values an enum parameter accepts', () => {
+  interface Param {
+    name: string;
+    values?: string[];
+  }
+  const paramsOf = async (tools: ToolDef[], name: string): Promise<Param[]> => {
+    const discover = buildDynamicTools(tools).find((t) => t.name === ReticleTool.TOOLS);
+    const out = (await discover?.handler(NO_DEPS, { names: [name] })) as {
+      tools: { name: string; params?: Param[] }[];
+    };
+    return out.tools.find((t) => t.name === name)?.params ?? [];
+  };
+
+  it("shows claim's three values, the ones the call enforces", async () => {
+    const claim = (await paramsOf(TOOLS, ReticleTool.SESSION)).find((p) => 'claim' === p.name);
+    expect(claim?.values).toEqual(['pass', 'fail', 'partial']);
+  });
+
+  it('reads through optional and default, and adds nothing to a non-enum', async () => {
+    const closed: ToolDef = {
+      name: 'reticle_closed',
+      description: 'd',
+      inputSchema: {
+        mode: z.enum(['halt', 'continue']).default('halt').optional().describe('what to do'),
+        label: z.string().optional(),
+      },
+      handler: () => Promise.resolve({}),
+    };
+    const params = await paramsOf([closed], 'reticle_closed');
+    expect(params.find((p) => 'mode' === p.name)?.values).toEqual(['halt', 'continue']);
+    expect(params.find((p) => 'label' === p.name)?.values).toBeUndefined();
   });
 });

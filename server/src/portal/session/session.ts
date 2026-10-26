@@ -4,6 +4,7 @@ import { asProjectId, type ChannelId, type ImpactSnapshot, type ProjectId } from
 import { narrationArgs, type NarrationBy } from './narration-args.js';
 import type { HandshakeFacts } from './facts/handshake-facts.js';
 import { refusedResult } from './page-commands/undeclared-command.js';
+import type { ProductionDrive } from '@/portal/production/production-drive.js';
 import { impactSnapshot, recordImpact } from '@/memory/impact/impact-recorder.js';
 import { callingAgent } from '@/hooks/coding-agents.js';
 import { recordNotes } from './human/notes-ledger.js';
@@ -33,7 +34,6 @@ import {
   parseEventPayload,
   PresenterTone,
   SESSION_HEALTH,
-  SESSION_LEASE,
   SESSION_LIFECYCLE,
   SessionState,
   type BrowserBrand,
@@ -63,6 +63,7 @@ import { ReviewStore, type ReviewMark } from './human/review-store.js';
 import { buildSessionRecommendation } from './presence/session-recommendation.js';
 import { buildPresenterArgs } from './human/presenter-args.js';
 import { buildSessionLease, type SessionLease } from './presence/session-lease.js';
+import { sessionAgeWarning } from './presence/session-lease.js';
 export type { SessionInfo } from './session-info.js';
 import { buildSessionInfo, type SessionInfo } from './session-info.js';
 import { notedAct, probeMarkers, withInstrumentation } from './recorded-gaps.js';
@@ -115,23 +116,20 @@ export class Session implements HandshakeFacts {
    * Undefined when nothing could name a project: callers fall back to the daemon's own root.
    */
   artifactRoot: string | undefined;
-  /**
-   * Same-origin endpoints this session's project declared as background (`.reticle.json`
-   * `background`). Stamped with `artifactRoot`, from the same project. Empty excludes nothing.
-   */
+  /** Same-origin `background` endpoints of this session's project, stamped with `artifactRoot`. */
   background: readonly string[] = [];
   url: string;
   title: string;
   adapters: string[];
   hasCapabilities: boolean;
-  // What the page said about itself at HELLO. `HandshakeFacts` holds the reasoning, including
-  // the rule that `undefined` means "too old to say" and never "no".
+  // What the page said at HELLO. `HandshakeFacts` holds the reasoning (`undefined` is never "no").
   versionSkew?: string;
   sdkVersion?: string | undefined;
   captureBodies?: boolean | undefined;
   channels?: readonly ChannelId[] | undefined;
   commands?: readonly string[] | undefined;
   sourceMapping?: boolean | undefined;
+  instrumentation?: HandshakeFacts['instrumentation'];
   readonly redactKeys: readonly string[];
 
   readonly #socket: WebSocket;
@@ -186,6 +184,8 @@ export class Session implements HandshakeFacts {
    */
   #editEpoch: number | undefined;
   readonly #departureNote = new DepartureNote();
+  /** Set when a production nonce opened this session: every act then passes the production policy. */
+  production: ProductionDrive | undefined;
 
   constructor(hello: HelloMessage, socket: WebSocket, clock: Clock) {
     this.id = hello.sessionId;
@@ -195,6 +195,7 @@ export class Session implements HandshakeFacts {
     this.adapters = hello.adapters;
     this.hasCapabilities = hello.hasCapabilities ?? false;
     this.sourceMapping = hello.sourceMapping;
+    this.instrumentation = hello.instrumentation;
     this.redactKeys = hello.redactKeys ?? [];
     this.#socket = socket;
     this.#clock = clock;
@@ -298,6 +299,7 @@ export class Session implements HandshakeFacts {
       hasCapabilities: this.hasCapabilities,
       runtime: this.#runtime,
       versionSkew: this.versionSkew,
+      sdkVersion: this.sdkVersion,
       hidden: this.#hidden,
       page: this.page,
       health: () => this.health(),
@@ -662,9 +664,14 @@ export class Session implements HandshakeFacts {
     args: Record<string, unknown> = {},
     timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
   ): Promise<CommandResult> {
-    // Recorded HERE, the one place every driven action passes (act_sequence and flow replay too;
-    // per-tool counting missed both and under-counted "exercised"). A reload sent from here is ours,
-    // so the page coming back is not read as a person reloading mid-drive.
+    // The production policy decides here, where every driven action passes, and never in the page.
+    if (this.production === undefined) return this.#dispatch(name, args, timeoutMs);
+    return this.production.gate(name, args, (n, a) => this.#dispatch(n, a, timeoutMs));
+  }
+
+  #dispatch(name: string, args: Record<string, unknown>, ms: number): Promise<CommandResult> {
+    // Recorded here, where every driven action passes (act_sequence and flow replay too). A reload
+    // sent from here is ours, so the page coming back is not a person reloading mid-drive.
     const ref = args['ref'];
     if (name === ReticleCommand.ACT && 'string' === typeof ref) this.recordActedRef(ref);
     if (name === ReticleCommand.REFRESH) noteOwnReload(this.id, this.#clock());
@@ -676,13 +683,13 @@ export class Session implements HandshakeFacts {
     // command to the live connection cannot perform anything twice — it is the call the agent would
     // have made itself after a `reticle_sessions` round trip, minus the round trip.
     const successor = this.#liveSuccessor();
-    if (successor !== undefined) return successor.command(name, args, timeoutMs);
+    if (successor !== undefined) return successor.command(name, args, ms);
     const id = this.#pending.nextId(COMMAND_ID_PREFIX);
     const payload = commandPayload(id, this.id, name, args);
     // The timeout message is built LAZILY: health can change while a command is in flight, and the
     // diagnosis should describe the page as it was when the command actually gave up.
-    const awaited = this.#pending.track(id, timeoutMs, () =>
-      commandTimeoutMessage(name, timeoutMs, {
+    const awaited = this.#pending.track(id, ms, () =>
+      commandTimeoutMessage(name, ms, {
         url: this.url,
         hidden: this.#hidden,
         lastSeenMs: this.lastSeenMs(),
@@ -718,7 +725,7 @@ export class Session implements HandshakeFacts {
         // timeout means a caller who granted 8s can wait 16, and across a chain of replacements the
         // total is unbounded — a wait nobody asked for, on the path that exists to save a round trip.
         // A budget already spent means there is nothing left to retry into, so the error stands.
-        const remaining = timeoutMs - (Date.now() - sentAt);
+        const remaining = ms - (Date.now() - sentAt);
         if (remaining <= 0) throw error;
         return next.command(name, args, remaining);
       });
@@ -926,16 +933,9 @@ export class Session implements HandshakeFacts {
     return buildSessionLease(this.id, this.#startedAt);
   }
 
-  /**
-   * Returns a human-readable age warning after SESSION_LEASE.WARN_AFTER_MS (10 min), else undefined.
-   * Spliced onto every session-bound tool result so the agent is passively reminded to clean up
-   * without needing an explicit polling loop.
-   */
+  /** The age reminder spliced onto session-bound results, so the agent cleans up without polling. */
   ageWarning(): string | undefined {
-    const ageMs = this.#clock() - this.#startedAt;
-    if (ageMs < SESSION_LEASE.WARN_AFTER_MS) return undefined;
-    const minutes = Math.floor(ageMs / 60_000);
-    return `Session ${this.id} has been open for ${String(minutes)} minutes. If your task is complete, call reticle_session{action:"end"} now.`;
+    return sessionAgeWarning(this.id, this.#clock() - this.#startedAt);
   }
 
   /**

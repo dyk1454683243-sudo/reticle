@@ -1,3 +1,6 @@
+import { MessageKind, RETICLE_PROTOCOL_VERSION } from '@reticlehq/core';
+import type { RefusedPage } from '@/portal/session/session-manager.js';
+
 /**
  * Which side of a protocol mismatch is the stale one, and therefore what to tell the user to do.
  *
@@ -24,9 +27,12 @@
 /** The page is older than the daemon: its SDK cannot speak the protocol the daemon expects. */
 export const BROWSER_IS_OLDER = 'protocol mismatch — upgrade @reticlehq/browser in this app';
 
-/** The daemon is older than the page. Usually an npx cache serving a stale @reticlehq/server. */
+/**
+ * The daemon is older than the page. Usually an npx cache serving a stale @reticlehq/server. The
+ * MCP server starts the daemon, so it is named first: a stop alone brings the same old daemon back.
+ */
 export const DAEMON_IS_OLDER =
-  'protocol mismatch — the daemon is older; run `reticle stop`, then retry';
+  'protocol mismatch — the daemon is older; update the MCP server or plugin, then `reticle stop`';
 
 /** The versions disagree but not in a direction we can read. */
 export const SKEW_UNKNOWN = 'protocol version mismatch — @reticlehq/browser and server disagree';
@@ -46,3 +52,66 @@ export const protocolSkewReason = (got: number | null, expected: number): string
   if (got > expected) return DAEMON_IS_OLDER;
   return SKEW_UNKNOWN;
 };
+
+/**
+ * When a message fails the strict schema, detect the specific case of a HELLO whose protocolVersion
+ * differs from ours — so we can tell the operator "upgrade @reticlehq/browser" instead of dropping the
+ * connection into the generic NO_SESSION_CONNECTED path, which misdiagnoses it as a port mismatch.
+ * Returns the mismatched version, or null when it isn't a version-mismatched HELLO.
+ */
+export function helloProtocolMismatch(text: string): number | null {
+  try {
+    const json = JSON.parse(text) as { kind?: unknown; protocolVersion?: unknown };
+    if (
+      json.kind === MessageKind.HELLO &&
+      'number' === typeof json.protocolVersion &&
+      json.protocolVersion !== RETICLE_PROTOCOL_VERSION
+    ) {
+      return json.protocolVersion;
+    }
+  } catch {
+    /* not JSON — fall through to the generic invalid-message path */
+  }
+  return null;
+}
+
+/**
+ * What a HELLO says about the page it came from, read loosely enough to survive the schema failing.
+ * Null when the message is not a hello at all — only an SDK sends one, so only then is a refusal
+ * evidence about an app.
+ */
+export function peekHelloPage(text: string): RefusedPage | null {
+  try {
+    const json = JSON.parse(text) as { kind?: unknown; url?: unknown; projectId?: unknown };
+    if (json.kind !== MessageKind.HELLO) return null;
+    return {
+      ...('string' === typeof json.url ? { url: json.url } : {}),
+      ...('string' === typeof json.projectId ? { projectId: json.projectId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `kind` and event `type` of a frame that failed the schema, for the log: never its payload,
+ * which can carry anything the page sent. Each is a bounded string or absent.
+ */
+export function peekFrameKind(text: string): { kind?: string; eventType?: string } {
+  const short = (v: unknown): string | undefined =>
+    'string' === typeof v ? v.slice(0, MAX_LOGGED_FRAME_FIELD) : undefined;
+  try {
+    const json = JSON.parse(text) as { kind?: unknown; event?: { type?: unknown } } | null;
+    const kind = short(json?.kind);
+    const eventType = short(json?.event?.type);
+    return {
+      ...(kind === undefined ? {} : { kind }),
+      ...(eventType === undefined ? {} : { eventType }),
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** How much of a frame's `kind` or event `type` the drop log keeps. */
+const MAX_LOGGED_FRAME_FIELD = 64;

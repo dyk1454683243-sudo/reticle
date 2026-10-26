@@ -91,6 +91,60 @@ describe('a taken port is named, not reported as a silent exit (#802)', () => {
     expect(portBusyMessage('Port 5173 is in use, trying another one...')).toMatch(/port 5173/);
   });
 
+  // Node prints the full address after the phrase. The port sits after the LAST colon of that
+  // address, so reading the first digit names the host instead of the port (#1846).
+  it('reads the port after the address in a Node EADDRINUSE line', () => {
+    expect(
+      portBusyMessage('Error: listen EADDRINUSE: address already in use 0.0.0.0:3000'),
+    ).toMatch(/port 3000 is already in use/);
+  });
+
+  it('reads the port of an IPv6 wildcard address', () => {
+    expect(portBusyMessage('Error: listen EADDRINUSE: address already in use :::3000')).toMatch(
+      /port 3000 is already in use/,
+    );
+  });
+
+  // The loopback digits sit INSIDE the address, so reading the first digit named port 1. The
+  // wildcard shape above has no such digit and passed before the fix — these two prove it.
+  it('reads the port of an IPv6 loopback address written bare', () => {
+    expect(portBusyMessage('Error: listen EADDRINUSE: address already in use ::1:4400')).toMatch(
+      /port 4400 is already in use/,
+    );
+  });
+
+  it('reads the port of an IPv6 loopback address written bracketed', () => {
+    expect(portBusyMessage('Error: listen EADDRINUSE: address already in use [::1]:4400')).toMatch(
+      /port 4400 is already in use/,
+    );
+  });
+
+  // The stack frame under the error carries digits of its own (`node:net:1817:16`); scanning past
+  // the line end named frame numbers as the port. The port lives on the error line or nowhere.
+  it('stays quiet when only the stack trace below the error line carries digits', () => {
+    expect(
+      portBusyMessage(
+        'Error: listen EADDRINUSE: address already in use\n    at Server (node:net:1817:16)',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('reads the port of a loopback address', () => {
+    expect(
+      portBusyMessage('Error: listen EADDRINUSE: address already in use 127.0.0.1:5173'),
+    ).toMatch(/port 5173 is already in use/);
+  });
+
+  it('reads the port after a host name', () => {
+    expect(
+      portBusyMessage('Error: listen EADDRINUSE: address already in use myhost.local:3000'),
+    ).toMatch(/port 3000 is already in use/);
+  });
+
+  it('still reads a bare port when the line names no address', () => {
+    expect(portBusyMessage('Error: listen EADDRINUSE 3000')).toMatch(/port 3000 is already in use/);
+  });
+
   it('stays quiet when the output does not name a busy port', () => {
     expect(portBusyMessage('Compiled successfully.')).toBeUndefined();
   });

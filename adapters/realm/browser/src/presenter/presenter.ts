@@ -34,7 +34,7 @@ import {
 } from './chrome/presenter-log.js';
 import { PRESENTER_CSS } from './presenter-styles.js';
 import { HudShell } from './presenter-shell.js';
-import { HARNESS_LOG_ATTR, harnessGateIn } from './presenter-harness-row.js';
+import { HARNESS_LOG_ATTR } from './presenter-harness-row.js';
 import { platformDetails } from './presenter-account.js';
 import { parseImpactSnapshot } from './chrome/presenter-report-copy.js';
 import { scheduleSyncDockLayout } from './presenter-dock-layout.js';
@@ -97,7 +97,7 @@ import {
   paintSdkVersion,
 } from './presenter-settings.js';
 import { Annotator, type AnnotatorChrome } from '@/review/annotator.js';
-import { shouldAutoOpenChat } from './presenter-shell.js';
+import { shouldAutoOpenChat, shouldReopenPanel } from './presenter-shell.js';
 import { installHudTelemetry } from './hud-telemetry.js';
 import { PlanBoard, parsePlanView } from './presenter-plan.js';
 import {
@@ -158,6 +158,8 @@ export class Presenter {
   #runLog: RunLogEntry[] = [];
   /** Tracks sessionStart/sessionEnd so both are idempotent (no strobe / no spurious off-write). */
   #sessionActive = false;
+  /** The agent's first row already opened the chat in this page load. */
+  #agentOpened = false;
   // v2: narration + action status accumulate in a persistent, timestamped, scrollable log.
   #logMax: number;
   #log: HTMLElement | undefined;
@@ -289,10 +291,7 @@ export class Presenter {
         // is "what has happened HERE".
         this.#shell.paintNotices(snapshot.notices);
         // Same snapshot, same moment: the switch cannot disagree with the card above it.
-        this.#shell.paintHarness(
-          snapshot.harnessConfig,
-          harnessGateIn(snapshot.instrumentation, snapshot.harnessConfig),
-        );
+        this.#shell.paintHarness(snapshot.harnessConfig);
         this.#shell.paintHarnessDrive(snapshot.harnessDrive, snapshot.lastDrive);
         this.#paintHarnessRun(snapshot.harnessDrive);
         this.#shell.paintAgent(snapshot.agent);
@@ -480,10 +479,9 @@ export class Presenter {
     this.#showSession();
     this.#glowCtl.resetActivity(this.#now());
     this.#startHeartbeat();
-    // `autoOpenChat` answers "should the chat appear at session start with no click". It does not
-    // answer "should it reappear after somebody minimised it and reloaded" — that was already
-    // answered, by hand, and a reload is not them changing their mind.
-    if (shouldAutoOpenChat(getPresenterSettings().autoOpenChat)) {
+    // A bridge that answered is not an agent at work: the dock only, unless the person left the
+    // panel open. The agent's first row opens it (see `log`).
+    if (shouldReopenPanel()) {
       this.#shell.openChat();
     }
   }
@@ -510,9 +508,12 @@ export class Presenter {
     this.#paintActStrip(this.#lastActionText, true);
     // The plain sentence on the row, the address and the checks one hover away for debugging.
     this.#actLine?.setAttribute('title', unreachableMessage(url, attempts));
-    // The message IS the reason this state exists, and a collapsed capsule hides it. Same setting
-    // a live session honours, so a user who wants the bare toolbar still gets one.
-    if (shouldAutoOpenChat(getPresenterSettings().autoOpenChat)) this.#shell.openChat();
+    // The same rule as a live session: the panel opens on load only when the person left it open.
+    // A page whose daemon is off is the common case between drives, and the panel then covered the
+    // app on every load.
+    if (shouldReopenPanel()) {
+      this.#shell.openChat();
+    }
   }
 
   /** Turn the base border (session mode) + the HUD/log on - the visible "session is live" state. */
@@ -877,6 +878,7 @@ export class Presenter {
     this.#remembered.push(kept);
     while (this.#remembered.length > this.#logMax) this.#remembered.shift();
     rememberLog(this.#remembered);
+    this.#openForAgent(kind);
     if (this.#shell.isCollapsed()) this.#shell.pulseFab(true);
     this.#renderTally();
     // Wrap the handle so a later outcome stamp updates BOTH the DOM glyph and the run-log entry.
@@ -889,6 +891,19 @@ export class Presenter {
         this.#renderTally(); // a deferred ✓/✗ stamp bumps the header tally
       },
     };
+  }
+  /**
+   * The agent's first row in this page load opens the chat: now it has something to show. Once, so
+   * a person who closes it keeps it closed. `autoOpenChat` and a minimise in this tab still decide.
+   */
+  #openForAgent(kind: LogKind): void {
+    if (this.#agentOpened || LOG_KIND.HUMAN === kind) {
+      return;
+    }
+    this.#agentOpened = true;
+    if (shouldAutoOpenChat(getPresenterSettings().autoOpenChat)) {
+      this.#shell.openChat();
+    }
   }
   /** Repaint the header verdict tally from the run log; the side that grew gets a one-shot pop. */
   #renderTally(): void {

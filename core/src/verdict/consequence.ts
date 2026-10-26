@@ -36,6 +36,19 @@ export type PresenceKind = (typeof PresenceKind)[keyof typeof PresenceKind];
  * The remaining kinds are neither consequence nor presence: they observe context (route, console),
  * timing (animation, settled), or combine other predicates (allOf/anyOf/not).
  */
+/**
+ * What a `settled` check waits on. Absent: the whole page (requests and DOM). `network`: requests
+ * only, for a check about requests — a counted `net` claim waits for a late duplicate, and DOM churn
+ * from an animation must not hold it open.
+ */
+/**
+ * What a `settled` waits out. NETWORK: completed requests only. APP: the default's activity plus every
+ * framework render commit, for an app whose commits are its work (the default leaves them out: on many
+ * pages they are ambient, a clock re-rendering every second, and would never go quiet).
+ */
+export const SettledChannel = { NETWORK: 'network', APP: 'app' } as const;
+export type SettledChannel = (typeof SettledChannel)[keyof typeof SettledChannel];
+
 export const PredicateKind = {
   ELEMENT: PresenceKind.ELEMENT,
   TEXT: PresenceKind.TEXT,

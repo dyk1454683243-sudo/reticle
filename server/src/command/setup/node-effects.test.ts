@@ -14,7 +14,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { alreadyWired, binaryExists, flowsSaved, probePage } from './node-effects.js';
+import {
+  alreadyWired,
+  binaryExists,
+  flowsSaved,
+  probePage,
+  writableLogDir,
+} from './node-effects.js';
 
 /**
  * From the BUILT module, like the handover tests below: the server runs under a supervisor script
@@ -51,8 +57,12 @@ async function waitForPort(port: number, want: 'held' | 'free'): Promise<string>
   const deadline = Date.now() + 10_000;
   for (;;) {
     const held = holdersOf(port);
-    if (('held' === want) === ('' !== held)) return held;
-    if (Date.now() >= deadline) return held;
+    if (('held' === want) === ('' !== held)) {
+      return held;
+    }
+    if (Date.now() >= deadline) {
+      return held;
+    }
     await sleep(50);
   }
 }
@@ -74,8 +84,9 @@ describe('the dev server this process owns', () => {
       try {
         server.start(`node "${fixture}"`, dir, {});
         const deadline = Date.now() + 10_000;
-        while (!server.output().includes('backgroundMarker') && Date.now() < deadline)
+        while (!server.output().includes('backgroundMarker') && Date.now() < deadline) {
           await sleep(50);
+        }
         // Astro checks this marker before agent auto-backgrounding. Without it, the launcher exits
         // and the server escapes the PID recorded for handover and cleanup.
         expect(JSON.parse(server.output())).toMatchObject({ backgroundMarker: '1' });
@@ -141,7 +152,9 @@ describe('the dev server this process owns', () => {
     server.start('echo "  Local: http://localhost:1234"', process.cwd(), {});
     // Polled, not slept: a fixed 600ms asserted a duration, and a shell starts slower on Windows,
     // so the output was still empty there. The per-test timeout is the bound.
-    while (!server.output().includes('http://localhost:1234')) await sleep(50);
+    while (!server.output().includes('http://localhost:1234')) {
+      await sleep(50);
+    }
     expect(server.output()).toContain('http://localhost:1234');
     expect(server.quietForMs()).toBeGreaterThanOrEqual(0);
     const log = server.logPath();
@@ -177,7 +190,26 @@ describe('the dev server this process owns', () => {
       /* already gone */
     }
     await sleep(50);
-    rmSync(dir, { recursive: true, force: true });
+    // Windows holds the folder until the killed process is fully gone: retry instead of failing.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+  });
+
+  // A sandboxed agent host or a locked-down profile cannot write the state home. Init had already
+  // wired the project, and then stopped here with a file-system error.
+  it('logs into the project when the state home cannot be written', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'unwritable-state-'));
+    const blocker = join(dir, 'not-a-folder');
+    writeFileSync(blocker, '');
+    const server = new OwnedDevServer(join(blocker, 'state'));
+    try {
+      expect(() => server.start('node -e "setTimeout(() => {}, 5000)"', dir, {})).not.toThrow();
+      expect(server.logPath()?.startsWith(join(dir, '.reticle', 'logs'))).toBe(true);
+      expect(readFileSync(join(dir, '.reticle', 'logs', '.gitignore'), 'utf8')).toBe('*\n');
+    } finally {
+      server.stop();
+      await sleep(50);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('has nothing to stop when nothing was started', () => {
@@ -188,6 +220,41 @@ describe('the dev server this process owns', () => {
 describe('probing the page', () => {
   it('reports nothing answering as not served', async () => {
     expect(await probePage('http://127.0.0.1:59233/')).toMatchObject({ served: false });
+  });
+
+  // break-matrix `dev-server-serves-only-a-base-path`: `/` is a plain 404 and `/admin` is
+  // the app. "nothing is serving <url>/admin" is only true when the fetch throws. A 404 at
+  // the root is an answer, and so is the page under test (run 40151192300 scored the
+  // first sentence against a server that was supposed to be this one).
+  it('reports a base-path url as served when the root is a plain 404', async () => {
+    const server = http.createServer((req, res) => {
+      const url = req.url ?? '';
+      if (url.startsWith('/admin')) {
+        res.end('<html>app</html>');
+        return;
+      }
+      res.statusCode = 404;
+      res.end('not found');
+    });
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (null === addr || 'string' === typeof addr) {
+          reject(new Error('no port'));
+        } else {
+          resolve(addr.port);
+        }
+      });
+    });
+    try {
+      const admin = await probePage(`http://127.0.0.1:${String(port)}/admin`);
+      const root = await probePage(`http://127.0.0.1:${String(port)}/`);
+      expect(admin).toMatchObject({ served: true, sdkInPage: false });
+      expect(root).toMatchObject({ served: true, sdkInPage: false });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('finds an IPv6-only listener when the announcement was IPv4 (#884)', async ({ skip }) => {
@@ -207,8 +274,11 @@ describe('probing the page', () => {
       server.once('error', reject);
       server.listen(0, '::1', () => {
         const addr = server.address();
-        if (null === addr || 'string' === typeof addr) reject(new Error('no port'));
-        else resolve(addr.port);
+        if (null === addr || 'string' === typeof addr) {
+          reject(new Error('no port'));
+        } else {
+          resolve(addr.port);
+        }
       });
     });
     try {
@@ -244,8 +314,11 @@ describe('probing the page', () => {
       slow.once('error', reject);
       slow.listen(0, '127.0.0.1', () => {
         const addr = slow.address();
-        if (null === addr || 'string' === typeof addr) reject(new Error('no port'));
-        else resolve(addr.port);
+        if (null === addr || 'string' === typeof addr) {
+          reject(new Error('no port'));
+        } else {
+          resolve(addr.port);
+        }
       });
     });
     // The same port on the other family answers at once — the sibling that used to win.
@@ -259,7 +332,9 @@ describe('probing the page', () => {
       expect(probe.served).toBe(false);
       expect(probe.reachedUrl).toBeUndefined();
     } finally {
-      for (const s of held) s.destroy();
+      for (const s of held) {
+        s.destroy();
+      }
       await new Promise<void>((resolve) => slow.close(() => resolve()));
       await new Promise<void>((resolve) => fast.close(() => resolve()));
     }
@@ -398,7 +473,9 @@ describe('handing the dev server over', () => {
       // init let go of it. A dead one stops beating and the deadline decides.
       const afterExit = beatNow();
       const deadline = Date.now() + 10_000;
-      while (beatNow() < afterExit + 10 && Date.now() < deadline) await sleep(20);
+      while (beatNow() < afterExit + 10 && Date.now() < deadline) {
+        await sleep(20);
+      }
       expect(beatNow(), 'the server stopped writing once init exited').toBeGreaterThanOrEqual(
         afterExit + 10,
       );
@@ -413,8 +490,11 @@ describe('handing the dev server over', () => {
     } finally {
       if (0 < pid) {
         try {
-          if (isWindows) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
-          else process.kill(-pid, 'SIGKILL');
+          if (isWindows) {
+            spawnSync('taskkill', ['/PID', String(pid), '/T', '/F']);
+          } else {
+            process.kill(-pid, 'SIGKILL');
+          }
         } catch {
           /* already gone, which is the failure this test reports */
         }
@@ -429,7 +509,9 @@ describe('handing the dev server over', () => {
       while (Date.now() < settled) {
         await sleep(100);
         const next = beatNow();
-        if (next === last) break;
+        if (next === last) {
+          break;
+        }
         last = next;
       }
       try {
@@ -439,4 +521,29 @@ describe('handing the dev server over', () => {
       }
     }
   }, 20_000);
+});
+
+/** A state home this process cannot write: init logs into the project, under its own ignore file. */
+describe('writableLogDir falls back to the project', () => {
+  function unwritableHome(): { preferred: string; project: string } {
+    const root = mkdtempSync(join(tmpdir(), 'reticle-logdir-'));
+    // A file where the folder must go: mkdir fails, as it does on a read-only home.
+    writeFileSync(join(root, 'home'), '');
+    return { preferred: join(root, 'home', 'logs'), project: join(root, 'app') };
+  }
+
+  it('writes an ignore file for the logs it keeps in the project', () => {
+    const { preferred, project } = unwritableHome();
+    const dir = writableLogDir(preferred, project);
+    expect(dir).toBe(join(project, '.reticle', 'logs'));
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('*\n');
+  });
+
+  it('keeps an ignore file that is already there', () => {
+    const { preferred, project } = unwritableHome();
+    mkdirSync(join(project, '.reticle', 'logs'), { recursive: true });
+    writeFileSync(join(project, '.reticle', 'logs', '.gitignore'), 'mine\n');
+    const dir = writableLogDir(preferred, project);
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toBe('mine\n');
+  });
 });

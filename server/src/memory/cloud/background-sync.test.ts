@@ -267,6 +267,26 @@ describe('the gate', () => {
     expect(gate({ env: { RETICLE_BACKGROUND_SYNC: '0' } })).toBe(BackgroundSyncState.OPTED_OUT);
   });
 
+  /**
+   * CI: `cloud.json` is committed and `RETICLE_API_KEY` is a secret, and nobody signs in. The docs
+   * said the daemon syncs there, and the gate said SIGNED_OUT, so a long-running daemon in CI sent
+   * nothing until it closed.
+   */
+  it('counts the linked key from the environment as signed in, as CI is', () => {
+    const env = { RETICLE_API_KEY: 'rk_test' };
+    expect(gate({ env, signedIn: () => undefined })).toBe(BackgroundSyncState.ON);
+    // A key stored by `reticle connect` won over the environment: that one needs a sign-in.
+    const stored = { ...LINKED, config: { url: URL_LINKED, apiKey: 'rk_stored' } };
+    expect(gate({ env, cloud: stored, signedIn: () => undefined })).toBe(
+      BackgroundSyncState.SIGNED_OUT,
+    );
+    // An environment key never links a project on its own.
+    const { link: _link, ...envOnly } = LINKED;
+    expect(gate({ env, cloud: envOnly, signedIn: () => undefined })).toBe(
+      BackgroundSyncState.UNLINKED,
+    );
+  });
+
   it('honours the project setting', () => {
     const project = realpathSync(mkdtempSync(join(tmpdir(), 'reticle-bg-project-')));
     writeFileSync(join(project, '.reticle.json'), JSON.stringify({ backgroundSync: false }));

@@ -9,3 +9,19 @@ export const MCP_SSE_PATH = '/mcp/sse';
 export const MCP_MESSAGE_PATH = '/mcp/message';
 /** Directory the MCP proxy was started in. One daemon serves every project, and this says which. */
 export const MCP_CLIENT_DIRECTORY_HEADER = 'x-reticle-client-directory';
+/**
+ * Query parameter on the SSE connect: one id per MCP proxy process. A reconnect from the same
+ * process sends the same id, so the daemon knows it is the same agent coming back.
+ */
+export const PROXY_ID_PARAM = 'proxyId';
+/**
+ * How long the daemon waits after the last agent detaches before it ends the browser sessions. A
+ * proxy that reconnects inside this window keeps them.
+ */
+export const AGENT_DETACH_GRACE_MS = 10_000;
+/**
+ * How long the daemon waits for a leased tab to close before it gives up on it. After this time it
+ * frees the slot and closes the browser that holds the tab, so a close that never returns cannot
+ * keep the tab open.
+ */
+export const LEASE_CLOSE_TIMEOUT_MS = 5_000;

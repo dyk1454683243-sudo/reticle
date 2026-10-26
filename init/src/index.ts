@@ -28,7 +28,7 @@ export { windowsShellArg } from './register/windows-quote.js';
 
 export { buildNodeIo, probeCli } from './node-io.js';
 export { terminalWidth, wrapForTerminal } from './diagnose/terminal-wrap.js';
-export { FEEDBACK_HINT } from './diagnose/closing-hint.js';
+export { COMMUNITY_HINT, FEEDBACK_HINT } from './diagnose/closing-hint.js';
 export { type InitHost, SILENT_HOST } from './host.js';
 export { RETICLE_VERSION, RETICLE_NPM_PACKAGE } from './version.js';
 export { InitFailure } from './diagnose/init-failure.js';
@@ -106,6 +106,7 @@ export { detectMcpClients, type DetectedClient } from './register/detect-clients
  * same agent table and the same merge `init` uses, so the two cannot disagree about an agent.
  */
 export {
+  AGENT_FLAG,
   MCP_FALLBACK_AGENTS,
   PROMPT_HOOK_AGENTS,
   PromptHookAgent,
@@ -113,6 +114,7 @@ export {
   installPromptHook,
   promptHookCommand,
   promptHookInstalled,
+  promptHookNpxOnly,
   promptHookTargets,
   uninstallPromptHook,
   type PromptHookSpec,

@@ -2,11 +2,12 @@
 title: Local registry
 description: 'Exercise local, unpublished Reticle changes in a real external app before they ship.'
 icon: box
+noindex: true
 ---
 
 To test unpublished `@reticlehq/*` changes in a real external app, publish the workspace to a local Verdaccio with `bash scripts/local-registry.sh`, then point that app's `.npmrc` at `http://127.0.0.1:4873/` as the **default** registry, not scoped to `@reticlehq`, for the reason in step 2. That is the whole procedure; the rest of this page is the detail.
 
-> **For normal use, Reticle is on public npm.** Just `npm i -D @reticlehq/react @reticlehq/vite-plugin` (see [Getting Started](getting-started.md)). You only need this guide to test **local, unpublished changes** to the Reticle packages in a real external app before they ship.
+> **For normal use, Reticle is on public npm.** Run `npx @reticlehq/server init` in your app (see [Getting Started](getting-started.md)). You only need this guide to test **local, unpublished changes** to the Reticle packages in a real external app before they ship.
 
 Because the `@reticlehq/*` packages depend on each other via the workspace protocol, plain `npm pack` tarballs don't resolve cleanly. The reliable way to exercise your in-progress changes in a real app is a tiny **local registry** (Verdaccio), the same path CI uses to validate a publish.
 
@@ -18,7 +19,7 @@ From the Reticle repo:
 bash scripts/local-registry.sh
 ```
 
-This starts a **fresh** Verdaccio on `http://127.0.0.1:4873`, creates a user/token, and publishes all `@reticlehq/*` packages there at the current workspace version:
+This starts a **fresh** Verdaccio on `http://127.0.0.1:4873`, creates a user and a token, and publishes every publishable workspace package there at the current workspace version: all `@reticlehq/*` packages and `open-verification`. The packages you install in an app are these:
 
 | Package | What you install it for |
 | --- | --- |
@@ -32,8 +33,6 @@ This starts a **fresh** Verdaccio on `http://127.0.0.1:4873`, creates a user/tok
 | `@reticlehq/core` | shared wire contract (pulled in automatically) |
 
 For a browser app, install `@reticlehq/react` plus the build plugin for your framework (`@reticlehq/vite-plugin` or `@reticlehq/next`); `@reticlehq/server` is what your agent runs. (Verified: an external `npm i @reticlehq/react` resolves its graph, including `@reticlehq/core`, and imports correctly.) Leave the registry running.
-
-> Note: pre-2.0 docs used a single `@reticlehq/core` umbrella package that re-exported everything; it's been split into the audience-scoped packages above.
 
 ## 2. Point your app at the local registry
 
@@ -64,7 +63,7 @@ npm i -D @reticlehq/react @reticlehq/vite-plugin
 # optional: npm i -D @reticlehq/eslint-plugin   # require-signal-on-mutation lint rule
 ```
 
-Then follow [Getting Started](getting-started.md): embed `reticle.connect()` (dev only) from `@reticlehq/react`, add the MCP server to your agent, and (React) `install()` the adapter from `@reticlehq/react`. For the fastest agent loop, also do [Step 6: make your app agent-legible](getting-started.md) (testids, `reticle.signal`, `registerStore`, `registerCapabilities`) and the [integration patterns](integration-patterns.md) (`createReticleEmitter` for zero prod-bundle cost).
+Then run `npx @reticlehq/server init` in the app. With the `.npmrc` from step 2, init also installs from Verdaccio. It wires the build plugin and registers the MCP server with your agent. To wire by hand, follow [Getting Started](getting-started.md). For the fastest agent loop, also do [Step 6: make your app agent-legible](getting-started.md) (testids, `reticle.signal`, `registerStore`, `registerCapabilities`) and the [integration patterns](integration-patterns.md) (`createReticleEmitter` for zero prod-bundle cost).
 
 > **Upgrading.** `scripts/local-registry.sh` resets Verdaccio and republishes at whatever version the workspace is on right now, so your app will not pick up a rebuild on its own. Pull it explicitly with `@latest`:
 >
@@ -129,7 +128,7 @@ With neither set, Reticle stays synthetic (zero extra deps) and says so via `inp
 ## Write replayable specs + git-checked flows
 
 - **Specs:** with `@reticlehq/test`, turn checks into `reticleTest("…", async t => { await t.act(...); await t.expectSignal(...) })`. They are signal/testid-bound, `reticle_clock` for determinism, `t.expectInputModeReal()` to skip-with-reason when real input isn't active. Run them headless via `reticle drive` (the same path CI uses).
-- **Flows:** record a flow once and Reticle writes it to a git-checked `.reticle/flows/<name>.json` (anchored on testid/signal); `reticle_flow_replay` re-resolves anchors at run time and reports **legible drift** with a nearest-match; `reticle_verify { action: "heal" }` proposes/applies the rebind. A fresh agent reads `.reticle/contract.json` to learn your testable surface without grepping source.
+- **Flows:** record a flow once and Reticle writes it to a git-checked `.reticle/flows/<name>.json` (anchored on testid/signal); `reticle_run { tool: "reticle_flow_replay", args: { flowName: "<name>" } }` replays one flow. It re-resolves anchors at run time and reports **legible drift** with a nearest-match. `reticle_verify { action: "flows" }` replays every saved flow; `reticle_verify { action: "heal" }` proposes/applies the rebind. A fresh agent reads `.reticle/contract.json` to learn your testable surface without grepping source.
 
 ## When you're ready for real npm
 

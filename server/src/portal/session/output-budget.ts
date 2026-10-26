@@ -141,3 +141,20 @@ export function withSizeCost<T>(result: T): T {
   if (typeof result !== 'object' || null === result) return result;
   return { ...(result as Record<string, unknown>), cost: sizeCost(result) } as T;
 }
+
+/**
+ * Drop `sessionId` from an event in a response the caller scoped to ONE session.
+ *
+ * The caller passed that id in the request, so echoing it on every event is the request quoted back
+ * once per row. Measured on a live app it was 25% of a four-event `reticle_observe` payload, and it
+ * grows linearly with the timeline — a fifty-event window spends ~2.5KB restating a fact the caller
+ * supplied. The id stays on the wire between SDK and bridge, where events from different sessions
+ * really do interleave; it is only redundant at this boundary.
+ */
+export function withoutConstantSessionId(event: unknown): unknown {
+  if (typeof event !== 'object' || null === event) {
+    return event;
+  }
+  const { sessionId: _sessionId, ...rest } = event as Record<string, unknown>;
+  return rest;
+}

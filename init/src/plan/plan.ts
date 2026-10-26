@@ -4,9 +4,6 @@
  * runner performs the `write` side-effects; this module decides *what* should happen.
  */
 
-import { Framework, UiLibrary, installCommand, installCommandParts } from '@/detect/detect.js';
-import { installFailureHint } from '@/diagnose/install-hint.js';
-import { installRetries } from '@/diagnose/install-retries.js';
 import {
   claudeAddCommand,
   claudeProjectMcpJson,
@@ -44,7 +41,7 @@ import {
 import { cspStep } from '@/diagnose/csp-step.js';
 import { HTML_INDEX_PATH } from '@/patch/static-page.js';
 import { frameworkSteps } from './framework-adapter.js';
-import { FRAMEWORK_ADAPTERS, RETICLE_BROWSER_SDK, RETICLE_REACT_KIT } from './framework-adapter.js';
+import { installStep } from './framework-adapter.js';
 import { MCP_TARGET, StepStatus, type Step, type Plan, type PlanInput } from './plan-types.js';
 export {
   DEPS_TARGET,
@@ -55,7 +52,7 @@ export {
   type PlanInput,
 } from './plan-types.js';
 import { join } from 'node:path';
-import { reticleConfigContent, usesReactKit } from '@/patch/snippets.js';
+import { reticleConfigContent } from '@/patch/snippets.js';
 import { configWithInstallSource } from '@/project/install-source-config.js';
 import { portMoveDetail, retargetConfigPort } from './port-steps.js';
 import {
@@ -79,39 +76,7 @@ import {
 
 // Re-exported: it moved to the module that reads it, and every existing importer says `plan.js`.
 export { RETICLE_CONFIG_FILE };
-
-/**
- * Pin the SDK to the CLI's own version.
- *
- * `pnpm add -D @reticlehq/react` once installed an older release in one project while npm and yarn
- * took the current one in the next — a stale registry metadata cache, invisible to everyone. A
- * version-skewed SDK talking to a newer daemon is the `-32000` failure path: the app connects, the
- * protocol disagrees, and nothing on either side names a version. Asking for the CLI's exact version
- * makes the cache irrelevant, and a skewed pair impossible to install by accident.
- */
-function pinnedPackages(
-  packages: readonly string[],
-  version: string | undefined,
-): readonly string[] {
-  if (version === undefined || 0 === version.length) return packages;
-  return packages.map((p) => `${p}@${version}`);
-}
-
-/**
- * The dev-dependencies `reticle init` installs — kit (or sensor) first, build plugin next.
- *
- * `uiLibrary` matters because the framework does not always name the renderer. The rule below was
- * already written for Nuxt, correctly, and applied only there: a Vue app on plain Vite is
- * `Framework.VITE` and a SvelteKit app renders Svelte, and both were being handed the React kit
- * right after `init` had detected the real UI library and said so on screen.
- */
-export function frameworkPackages(
-  framework: Framework,
-  uiLibrary: UiLibrary = UiLibrary.UNKNOWN,
-): readonly string[] {
-  const kit = usesReactKit(uiLibrary, framework) ? RETICLE_REACT_KIT : RETICLE_BROWSER_SDK;
-  return FRAMEWORK_ADAPTERS[framework].packages(kit);
-}
+export { frameworkPackages } from './framework-adapter.js';
 
 /**
  * Where the agent-facing files go, which is not always where the app is.
@@ -130,7 +95,9 @@ function agentFile(input: PlanInput, relPath: string): string {
 const CLAUDE_MCP_TITLE = 'MCP server (Claude, global)';
 
 function claudeMcpStep(input: PlanInput): Step | null {
-  if (!input.claudeCli) return null;
+  if (!input.claudeCli) {
+    return null;
+  }
   if (input.mcpExists) {
     return {
       title: CLAUDE_MCP_TITLE,
@@ -181,8 +148,12 @@ function codexCliStep(
   existing: string | null,
   input: PlanInput,
 ): Step | null {
-  if (McpClient.CODEX !== spec.id || true !== input.codexCli) return null;
-  if (codexNamesOurServer(existing, spec.serversKey)) return null;
+  if (McpClient.CODEX !== spec.id || true !== input.codexCli) {
+    return null;
+  }
+  if (codexNamesOurServer(existing, spec.serversKey)) {
+    return null;
+  }
   const cmd = codexAddCommand();
   return {
     title: `MCP server (${spec.label})`,
@@ -231,7 +202,9 @@ function clientStep(spec: ClientSpec, configPath: string, existing: string | nul
  * they get the notice instead.
  */
 function claudeProjectStep(input: PlanInput): Step | null {
-  if (input.claudeCli || true !== input.insideClaudeCode) return null;
+  if (input.claudeCli || true !== input.insideClaudeCode) {
+    return null;
+  }
   const path = agentFile(input, CLAUDE_PROJECT_CONFIG);
   return clientStep(CLAUDE_PROJECT_SPEC, path, input.claudeProjectConfig ?? null);
 }
@@ -299,7 +272,9 @@ function mcpSteps(input: PlanInput): Step[] {
     });
   }
   const windowsNote = windowsMcpNoteStep(input);
-  if (windowsNote !== null) steps.push(windowsNote);
+  if (windowsNote !== null) {
+    steps.push(windowsNote);
+  }
   return steps;
 }
 
@@ -313,7 +288,9 @@ const SLASH_COMMAND_TITLE = 'The /reticle command';
  * our signature is left exactly as it is.
  */
 function commandIsSettled(content: string | null | undefined): boolean {
-  if (null === content || content === undefined) return false;
+  if (null === content || content === undefined) {
+    return false;
+  }
   return content === SLASH_COMMAND_BODY || !content.includes(SLASH_COMMAND_SIGNATURE);
 }
 
@@ -330,7 +307,9 @@ function commandStepFor(
   present: boolean,
   content: string | null | undefined,
 ): Step | null {
-  if (!present) return null;
+  if (!present) {
+    return null;
+  }
   return commandIsSettled(content)
     ? {
         title: SLASH_COMMAND_TITLE,
@@ -381,7 +360,9 @@ const AGENT_RULE_DETAIL = 'teach the agent to verify features with Reticle after
  */
 function ruleWriteDetail(existing: string | null | undefined, file: string): string {
   const hasContent = existing !== null && existing !== undefined && existing.trim().length > 0;
-  if (!hasContent) return `${AGENT_RULE_DETAIL} — creates ${file}`;
+  if (!hasContent) {
+    return `${AGENT_RULE_DETAIL} — creates ${file}`;
+  }
   const added = markedBlock().split('\n').length - 1;
   return (
     `${AGENT_RULE_DETAIL} — APPENDS ${String(added)} lines to your existing ${file}, ` +
@@ -400,7 +381,9 @@ const RETICLE_MD_DETAIL =
 const IMPORTS_AGENTS_MD = /^[ \t]*@(?:\.\/)?AGENTS\.md[ \t]*\r?$/m;
 
 function claudeRuleStep(input: PlanInput): Step | null {
-  if (!input.claudeCli) return null;
+  if (!input.claudeCli) {
+    return null;
+  }
   const path = agentFile(input, CLAUDE_MD_PATH);
   if (IMPORTS_AGENTS_MD.test(input.claudeMdContent ?? '')) {
     return {
@@ -436,8 +419,12 @@ function claudeRuleStep(input: PlanInput): Step | null {
  */
 function cursorRuleStep(input: PlanInput): Step | null {
   const cursorGlobal = (input.detectedClients ?? []).some((c) => c.id === McpClient.CURSOR);
-  if (!cursorGlobal && true !== input.cursorProjectPresent) return null;
-  if (input.cursorProjectPresent !== true && input.claudeCli) return null;
+  if (!cursorGlobal && true !== input.cursorProjectPresent) {
+    return null;
+  }
+  if (input.cursorProjectPresent !== true && input.claudeCli) {
+    return null;
+  }
   // The whole file is Reticle's — init created it — so a stale one is REWRITTEN rather than merged.
   // Comparing content is what makes the rule updatable; comparing existence made it permanent.
   const path = agentFile(input, CURSOR_RULE_PATH);
@@ -581,7 +568,9 @@ function reticleMdStep(input: PlanInput): Step {
  * noise.
  */
 function agentRuleSteps(input: PlanInput): Step[] {
-  if (!input.options.mcp) return [];
+  if (!input.options.mcp) {
+    return [];
+  }
   return [...stepsForAgents(input, (a) => a.ruleStep), agentsMdStep(input), reticleMdStep(input)];
 }
 
@@ -622,103 +611,6 @@ function prettierIgnoreStep(input: PlanInput): Step | null {
   };
 }
 
-/**
- * What to say when the install command fails.
- *
- * pnpm's `minimumReleaseAge` refuses any release younger than the configured window — a deliberate
- * supply-chain policy, not a bug — with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. Unpinned it silently
- * resolves to an OLDER version instead, which is how an app ends up running a stale SDK against a
- * newer daemon: the connection succeeds, the protocol disagrees, and the failure surfaces as -32000
- * with nothing naming a version. Pinning turns that into this loud failure, which is the better
- * trade — but only if the message says what to do about it.
- */
-
-/**
- * Is this package already declared at the version we would pin?
- *
- * The caret is the point. `npm i -D pkg@3.2.0` WRITES `^3.2.0`, so on every later run the pinned
- * `3.2.0` failed a string comparison against the range npm had just created, and init re-installed
- * for ever. Only the two forms a package manager writes by itself are read - an exact version, and
- * `^`/`~` over that same version.
- *
- * Everything else installs. A false "already" leaves somebody with no SDK and an install that
- * claims to have run; a redundant install only costs time, so the unreadable cases go the safe way.
- */
-function alreadyDeclared(declared: string | undefined, pinned: string | undefined): boolean {
-  if (declared === undefined) return false;
-  if (pinned === undefined || 0 === pinned.length) return true;
-  return declared === pinned || `^${pinned}` === declared || `~${pinned}` === declared;
-}
-
-function installStep(input: PlanInput): Step {
-  const pm = input.detection.packageManager;
-  // `Detection.packageManagerCommand` (see `preflight.ts`, #1149). Falling back to `pm` covers every
-  // caller that never went through preflight (tests, and any future one).
-  const pmCommand = input.detection.packageManagerCommand ?? pm;
-  const packages = pinnedPackages(
-    frameworkPackages(input.detection.framework, input.detection.uiLibrary),
-    input.options.sdkVersion,
-  );
-  const command = installCommand(pm, packages, pmCommand);
-  /*
-   * A re-run over an already-wired project does NO dependency work.
-   *
-   * Reported from the field: `init` on an instrumented npm-workspaces project ran a pnpm dependency
-   * migration, which moved the existing `node_modules` aside and broke the dev server. Whatever
-   * manager gets chosen, the redundant install is the step that touches the tree — so the fix that
-   * matters is not running one that nothing needs. `init` is documented as idempotent; this is the
-   * step that was not.
-   */
-  const declared = input.detection.dependencies ?? {};
-  const version = input.options.sdkVersion;
-  const names = frameworkPackages(input.detection.framework, input.detection.uiLibrary);
-  if (names.length > 0 && names.every((n) => alreadyDeclared(declared[n], version))) {
-    return {
-      title: 'Install dependencies',
-      target: 'package.json',
-      status: StepStatus.ALREADY,
-      detail: `${names.join(', ')} already declared${version === undefined || 0 === version.length ? '' : ` at ${version}`}`,
-    };
-  }
-  // Never install into a linked tree: the package manager replaces the link (a workspace's tree).
-  if (true === input.nodeModulesLinked) {
-    return {
-      title: 'Install dependencies',
-      target: 'package.json',
-      status: StepStatus.SKIP,
-      detail: `skipped: node_modules is a link to another tree, which an install here would replace; install them where it points: ${command}`,
-    };
-  }
-  // The person said `--no-install`: a choice, not a step left undone, so not a ⚠.
-  if (!input.options.install) {
-    return {
-      title: 'Install dependencies',
-      target: 'package.json',
-      status: StepStatus.SKIP,
-      detail: `skipped (--no-install); install them yourself: ${command}`,
-    };
-  }
-  const parts = installCommandParts(pm, packages, [], pmCommand);
-  return {
-    title: 'Install dependencies',
-    target: 'package.json',
-    status: StepStatus.APPLY,
-    detail: command,
-    exec: {
-      command: parts.command,
-      args: parts.args,
-      fallback: `${command}\n\n${installFailureHint(pm, pmCommand)}`,
-    },
-    retries: installRetries(
-      pm,
-      packages,
-      frameworkPackages(input.detection.framework, input.detection.uiLibrary),
-      input.options.sdkVersion,
-      pmCommand,
-    ),
-  };
-}
-
 const RETICLE_CONFIG_TITLE = 'Reticle config';
 const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
 
@@ -739,7 +631,9 @@ const AGENT_ROOT_CONFIG_TITLE = 'Reticle config (agent root)';
 
 function agentRootConfigStep(input: PlanInput, content: string, renamedFrom?: string): Step[] {
   const root = input.agentFileRoot;
-  if (root === undefined || 0 === root.length) return [];
+  if (root === undefined || 0 === root.length) {
+    return [];
+  }
   const path = agentFile(input, RETICLE_CONFIG_FILE);
   const declared = projectIdOf(input.agentRootConfigSource);
   // The root's copy of the id `--new-id` just replaced is this checkout's, not another app's.
@@ -886,7 +780,9 @@ function withOwnProjectId(
 ): { code: string; from: string } | null {
   const id = options.projectId;
   const from = projectIdOf(source);
-  if (true !== options.newId || id === undefined || from === undefined || from === id) return null;
+  if (true !== options.newId || id === undefined || from === undefined || from === id) {
+    return null;
+  }
   const fields = JSON.parse(source) as Record<string, unknown>;
   return { code: `${JSON.stringify({ ...fields, projectId: id }, null, 2)}\n`, from };
 }
@@ -925,7 +821,9 @@ function reticleConfigSteps(input: PlanInput): Step[] {
  */
 function copiedIdSteps(input: PlanInput, from: string): Step[] {
   const id = input.options.projectId;
-  if (id === undefined) return [];
+  if (id === undefined) {
+    return [];
+  }
   return (input.copiedIdSources ?? []).map(({ path, source }) => ({
     title: RETICLE_CONFIG_TITLE,
     target: path,
@@ -955,8 +853,9 @@ export function buildPlan(input: PlanInput): Plan {
       // Beside the CLAUDE.md rule: the same agent, the same consent to write its instruction files.
       compact: input.options.mcp && input.claudeCli,
       prompt: true === input.claudePromptHook,
+      bin: input.hookBin,
     }),
-    ...promptHookSteps(input.promptHooks ?? [], true === input.claudePromptHook),
+    ...promptHookSteps(input.promptHooks ?? [], true === input.claudePromptHook, input.hookBin),
     ...uiLibraryStep(input),
     ...webGlCanvasStep(input),
     installStep(input),
@@ -974,6 +873,8 @@ export function buildPlan(input: PlanInput): Plan {
   // LAST, and a notice rather than an action: it is a statement about this machine's shape, and it
   // only matters once every file above has been written. See containerised-dev-server.ts.
   const container = containerisedStep(input);
-  if (container !== null) steps.push(container);
+  if (container !== null) {
+    steps.push(container);
+  }
   return { framework: input.detection.framework, uiLibrary: input.detection.uiLibrary, steps };
 }

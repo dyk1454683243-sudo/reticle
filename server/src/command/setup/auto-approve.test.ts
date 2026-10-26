@@ -150,3 +150,41 @@ describe('pre-approving Reticle', () => {
     expect(io.files['/home/u/.claude/settings.json']).toBe('{ not json');
   });
 });
+
+/*
+ * Codex asked for approval on every Reticle call, and under `approval_policy = "never"` it refused
+ * every call, so a headless `codex exec` made no Reticle call at all. Codex has a per-server rule,
+ * `default_tools_approval_mode`, in the `[mcp_servers.reticle]` table that `codex mcp add` writes.
+ */
+describe('pre-approving Reticle in Codex', () => {
+  const CONFIG = '/home/u/.codex/config.toml';
+  const TABLE =
+    '[mcp_servers.reticle]\ncommand = "npx"\nargs = ["-y", "@reticlehq/server", "mcp"]\n';
+
+  it('adds the approval mode to the reticle table, and keeps the rest of the file', () => {
+    const other = '[mcp_servers.other]\ncommand = "x"\n';
+    const io = fakeIo({ '/home/u/.codex': '', [CONFIG]: `model = "o3"\n\n${TABLE}\n${other}` });
+    const [result] = grantAutoApproval(io, WHERE, [grantById('codex')]);
+    expect(result?.outcome).toBe(ApprovalOutcome.GRANTED);
+    expect(io.files[CONFIG]).toBe(
+      `model = "o3"\n\n[mcp_servers.reticle]\ndefault_tools_approval_mode = "approve"\n` +
+        `command = "npx"\nargs = ["-y", "@reticlehq/server", "mcp"]\n\n${other}`,
+    );
+  });
+
+  it('keeps an approval mode that the user set', () => {
+    const own = `${TABLE}default_tools_approval_mode = "prompt"\n`;
+    const io = fakeIo({ '/home/u/.codex': '', [CONFIG]: own });
+    const [result] = grantAutoApproval(io, WHERE, [grantById('codex')]);
+    expect(result?.outcome).toBe(ApprovalOutcome.ALREADY);
+    expect(io.files[CONFIG]).toBe(own);
+  });
+
+  it('writes nothing and names the setting when the reticle table is not there', () => {
+    const io = fakeIo({ '/home/u/.codex': '', [CONFIG]: 'model = "o3"\n' });
+    const [result] = grantAutoApproval(io, WHERE, [grantById('codex')]);
+    expect(result?.outcome).toBe(ApprovalOutcome.DEFERRED);
+    expect(result?.warn).toContain('default_tools_approval_mode = "approve"');
+    expect(io.files[CONFIG]).toBe('model = "o3"\n');
+  });
+});

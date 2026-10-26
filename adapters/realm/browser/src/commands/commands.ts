@@ -24,6 +24,7 @@ import { editEpoch } from '@/edit-epoch.js';
 import { isButton, isInput } from '@/dom/realm.js';
 import { hitTestOccluder } from '@/dom/occlusion.js';
 import { readStorage } from '@/observers/storage.js';
+import { canvasAfterAct } from '@/observers/canvas.js';
 import { captureDesktopWindow } from '@/dom/desktop-capture.js';
 import { identifyComponent, readComponentState } from '@/registry/stores/adapters.js';
 import { readStoresWithTruncation, readStoresRaw, storeNames } from '@/registry/stores.js';
@@ -51,9 +52,13 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function sourceLocation(value: unknown): ElementQuery['source'] {
-  if (typeof value !== 'object' || null === value) return undefined;
+  if (typeof value !== 'object' || null === value) {
+    return undefined;
+  }
   const obj = value as Record<string, unknown>;
-  if (typeof obj['file'] !== 'string' || typeof obj['line'] !== 'number') return undefined;
+  if (typeof obj['file'] !== 'string' || typeof obj['line'] !== 'number') {
+    return undefined;
+  }
   return { file: obj['file'], line: obj['line'], column: num(obj['column']) };
 }
 
@@ -89,7 +94,9 @@ function inspect(ref: string, reveal = false): unknown {
   // visible all required) — so the MCP layer answered -32602 Output validation error for the most
   // ordinary thing that follows a click. The wording matches actions.ts because the server's
   // recovery table keys off /no longer resolves to an element/ to attach the stale-ref recovery.
-  if (null === el) throw new Error(editEpoch.staleRefMessage(ref));
+  if (null === el) {
+    throw new Error(editEpoch.staleRefMessage(ref));
+  }
   // `reveal` is the real-input path asking for a box it can aim at (#1711): a real pointer sent to
   // an off-viewport box lands on nothing. Same scroll as the synthetic click. Never without the ask:
   // an inspect is otherwise a read, and a read must not move the page.
@@ -97,7 +104,9 @@ function inspect(ref: string, reveal = false): unknown {
     reveal &&
     'function' === typeof el.scrollIntoView &&
     isOffViewport(el, el.getBoundingClientRect());
-  if (scrolledIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+  if (scrolledIntoView) {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+  }
   const rect = el.getBoundingClientRect();
   const component = identifyComponent(el);
   const view = el.ownerDocument.defaultView;
@@ -264,7 +273,9 @@ function readState(
   };
   // The whole-store read is where a large store silently became a small one. Present only when a cap
   // actually fired, so an intact read is unchanged and the field's presence is the warning.
-  if (truncation !== undefined) result.truncation = truncation;
+  if (truncation !== undefined) {
+    result.truncation = truncation;
+  }
   if (ref !== undefined && ref.length > 0) {
     const el = refs.resolve(ref);
     if (null === el) {
@@ -289,7 +300,9 @@ function readState(
  */
 function listAnimations(): unknown {
   const doc = document as Document & { getAnimations?: () => Animation[] };
-  if (typeof doc.getAnimations !== 'function') return { animations: [] };
+  if (typeof doc.getAnimations !== 'function') {
+    return { animations: [] };
+  }
   const animations = doc.getAnimations().map((a) => {
     const effect = a.effect;
     const timing = effect?.getTiming();
@@ -308,7 +321,9 @@ function listAnimations(): unknown {
 }
 
 export function resolveNavigationUrl(rawUrl: string, baseUrl: string): string | null {
-  if (0 === rawUrl.length || rawUrl.length > TRANSPORT_LIMITS.MAX_URL_LENGTH) return null;
+  if (0 === rawUrl.length || rawUrl.length > TRANSPORT_LIMITS.MAX_URL_LENGTH) {
+    return null;
+  }
   try {
     const url = new URL(rawUrl, baseUrl);
     return 'http:' === url.protocol || 'https:' === url.protocol ? url.toString() : null;
@@ -327,6 +342,10 @@ export function createCommandRegistry(): Map<string, CommandHandler> {
       // Only the completion re-read sets this: it re-reads a branch the truncated walk stopped
       // BEFORE emitting, so that branch's own line has to come back with its descendants.
       includeRoot: true === args['includeRoot'],
+      // A harness building a map of the app asks for each control's test id (`SnapshotOptions.ids`).
+      ids: true === args['ids'],
+      // And a harness looking for what a person would see broken asks for the layout audit.
+      audit: true === args['audit'],
     }),
   );
   reg.set(ReticleCommand.QUERY, (args) => {
@@ -342,13 +361,20 @@ export function createCommandRegistry(): Map<string, CommandHandler> {
       true === args['diagnose'],
     ),
   );
-  reg.set(ReticleCommand.ACT, (args) => {
+  // Each act ends with a canvas sample, before it answers, so the frame it drew is tied to it.
+  reg.set(ReticleCommand.ACT, async (args) => {
     const action = str(args['action']) ?? '';
-    return executeAction(str(args['ref']) ?? '', action, record(args['args']));
+    const result = await executeAction(str(args['ref']) ?? '', action, record(args['args']));
+    canvasAfterAct();
+    return result;
   });
-  reg.set(ReticleCommand.ACT_SEQUENCE, (args) =>
-    executeSequence((Array.isArray(args['steps']) ? args['steps'] : []) as ActionStep[]),
-  );
+  reg.set(ReticleCommand.ACT_SEQUENCE, async (args) => {
+    const result = await executeSequence(
+      (Array.isArray(args['steps']) ? args['steps'] : []) as ActionStep[],
+    );
+    canvasAfterAct();
+    return result;
+  });
   reg.set(ReticleCommand.INSPECT, (args) =>
     inspect(str(args['ref']) ?? '', true === args[INSPECT_REVEAL_ARG]),
   );
@@ -357,9 +383,13 @@ export function createCommandRegistry(): Map<string, CommandHandler> {
     if (true === args['reset']) {
       resetClock();
     } else {
-      if (true === args['freeze']) freezeClock();
+      if (true === args['freeze']) {
+        freezeClock();
+      }
       const adv = args['advanceMs'];
-      if ('number' === typeof adv) advanceClock(adv);
+      if ('number' === typeof adv) {
+        advanceClock(adv);
+      }
     }
     return { frozen: isClockFrozen() };
   });
@@ -382,9 +412,13 @@ export function createCommandRegistry(): Map<string, CommandHandler> {
   });
   reg.set(ReticleCommand.NAVIGATE, (args) => {
     const rawUrl = str(args['url']);
-    if (rawUrl === undefined || 0 === rawUrl.length) return { ok: false, reason: 'url required' };
+    if (rawUrl === undefined || 0 === rawUrl.length) {
+      return { ok: false, reason: 'url required' };
+    }
     const url = resolveNavigationUrl(rawUrl, window.location.href);
-    if (null === url) return { ok: false, reason: 'only http(s) navigation is allowed' };
+    if (null === url) {
+      return { ok: false, reason: 'only http(s) navigation is allowed' };
+    }
     window.location.assign(url);
     return { ok: true, url };
   });

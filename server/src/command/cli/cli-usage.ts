@@ -9,6 +9,7 @@
  * not: `npx reticle` resolves the PACKAGE named `reticle`, which belongs to somebody else, and npx
  * will happily fetch and run it. So the npx spelling leads every page.
  */
+import { FEEDBACK_KIND_CHOICES } from '@reticlehq/core';
 
 export const HelpGroup = {
   START: 'Get started',
@@ -36,7 +37,7 @@ interface CommandDoc {
 
 const INIT_DETAIL = `init wires the project, boots the app and proves a page connected. It ends with the
 instrumentation score, what is missing, and a prompt for your coding agent, which proves
-the first flow. It never drives: the Harness is opt-in and unlocks at 80% instrumentation.
+the first flow. It never drives: the Harness is opt-in and runs at any instrumentation score.
 
   --app <dir>        which app in a monorepo: writes its files only (add --start to boot it)
   --env KEY=VALUE    what the app needs to reach a usable state (repeatable)
@@ -73,6 +74,11 @@ const VERIFY_DETAIL = `Drives the URL and verifies the saved flows. Exit 0 means
 const BROWSER_NOTE = `The browser Reticle opens for your agent is shown so you can watch the run. --headless hides
 it; CI, RETICLE_HEADLESS=1, or a Linux machine with no display hides it too.`;
 
+/** What `--http` starts. MCP is already on the bridge port; this flag is the verify endpoint. */
+const HTTP_HELP = '--http starts the verify endpoint. MCP is already served on the bridge port.';
+
+const DAEMON_DETAIL = `${BROWSER_NOTE}\n\n${HTTP_HELP}`;
+
 const COMMANDS: readonly CommandDoc[] = [
   {
     name: 'init',
@@ -94,9 +100,8 @@ const COMMANDS: readonly CommandDoc[] = [
       '  --project <name|id>    the dashboard project to link\n' +
       '  --workspace <name|id>  the workspace to link in, when you belong to more than one\n' +
       '  --url <origin>         the Reticle platform, when it is not the default\n\n' +
-      'Without a browser (CI, an agent), in two steps:\n' +
-      '  reticle login --email <e> [--org <name>]     emails a 6-digit code\n' +
-      '  reticle login --email <e> --code <123456>    signs in, then links this repo',
+      'Sign-in is with Google or GitHub, in the browser. Without a browser (CI, an agent), set\n' +
+      'RETICLE_API_KEY to a key from Settings > API keys. Email sign-in is gone.',
   },
   {
     name: 'try',
@@ -143,7 +148,8 @@ const COMMANDS: readonly CommandDoc[] = [
     summary: 'Stop Reticle; --force frees its port even without a recorded pid',
     group: HelpGroup.MACHINE,
     detail:
-      'Without --force, stops the daemon Reticle started, by its recorded pid.\n' +
+      'Without --force, asks the daemon to stop (an authenticated request on loopback), and sends\n' +
+      'a signal to its recorded pid only if it does not accept.\n' +
       "With --force, frees the port by the Reticle daemon LISTENING on it, never the agent's MCP\n" +
       'proxy, and refuses a listener that is not Reticle.',
   },
@@ -167,12 +173,13 @@ const COMMANDS: readonly CommandDoc[] = [
   },
   {
     name: 'feedback',
-    synopsis: 'feedback [--rating 1-5] [--bug] "message"',
+    synopsis: 'feedback [--rating 1-5] [--bug] [--contact <email>] "message"',
     summary: "Tell us what worked and what didn't; prints exactly what it sends",
     group: HelpGroup.ACCOUNT,
     detail:
-      'Agents: reticle feedback --agent --kind <bug|gap|ambiguity|feature_request|improvement|experience> "message"\n' +
-      'works from anywhere, including a setup that never finished.',
+      `Agents: reticle feedback --agent --kind ${FEEDBACK_KIND_CHOICES} "message"\n` +
+      'works from anywhere, including a setup that never finished.\n' +
+      '--contact <email> adds an address for a reply. It is sent only when you give it.',
   },
   {
     name: 'telemetry',
@@ -229,16 +236,21 @@ const COMMANDS: readonly CommandDoc[] = [
   },
   {
     name: 'hook',
-    synopsis: 'hook [install|uninstall|status|prompt --agent <id>]',
-    summary: 'Save each prompt you send to .reticle/, through your agent hooks',
+    synopsis:
+      'hook [install|uninstall|status|prompt --agent <id>|tool --agent <id>|export --structure]',
+    summary:
+      'Save prompts, tool calls, the model and closing messages to .reticle/, through your agent hooks',
     group: HelpGroup.MORE,
     detail:
       '  hook install      add the prompt-capture hook for the agents used here\n' +
       '  hook uninstall    remove exactly the entries hook install added\n' +
       '  hook status       which agents capture prompts, and which rely on the MCP instructions\n' +
-      '  hook prompt --agent <id>   what the agent hook runs; reads the prompt on stdin\n\n' +
-      'Off for one project: "promptCapture": false in .reticle.json. Off on this machine:\n' +
-      'RETICLE_PROMPT_CAPTURE=0.',
+      '  hook prompt --agent <id>   what the agent hook runs; reads the prompt on stdin\n' +
+      '  hook tool --agent <id>     what the post-tool hook runs; keeps the call in .reticle/episodes/\n' +
+      '  hook export --structure    each snapshot step in .reticle/episodes/ as text-free page structure (JSONL)\n\n' +
+      'One switch stops prompts, tool calls, the model and the closing message. Off for one project:\n' +
+      '"promptCapture": false in .reticle.json. Off on this machine: RETICLE_PROMPT_CAPTURE=0.\n' +
+      'Tool calls also stop with the journal: "journal": false or RETICLE_JOURNAL=0.',
   },
   {
     name: 'mcp',
@@ -246,7 +258,7 @@ const COMMANDS: readonly CommandDoc[] = [
       'mcp [--port N] [--drive <url>] [--headless] [--headed] [--http] [--http-port N] [--http-token T]',
     summary: 'The MCP stdio server your agent runs; starts the daemon if needed',
     group: HelpGroup.MORE,
-    detail: BROWSER_NOTE,
+    detail: DAEMON_DETAIL,
   },
   {
     name: 'serve',
@@ -254,7 +266,7 @@ const COMMANDS: readonly CommandDoc[] = [
       'serve [--port N] [--drive <url>] [--headless] [--headed] [--http] [--http-port N] [--http-token T]',
     summary: 'Start the daemon in the background; returns once it answers',
     group: HelpGroup.MORE,
-    detail: BROWSER_NOTE,
+    detail: DAEMON_DETAIL,
   },
   {
     name: 'drive',
@@ -324,12 +336,18 @@ export function renderHelp(
   topic: string | undefined,
   renamed: ReadonlyMap<string, string> = new Map(),
 ): string {
-  if (topic === undefined) return CLI_USAGE;
-  if (HELP_ALL_TOPIC === topic) return CLI_USAGE_ALL;
+  if (topic === undefined) {
+    return CLI_USAGE;
+  }
+  if (HELP_ALL_TOPIC === topic) {
+    return CLI_USAGE_ALL;
+  }
   const now = renamed.get(topic);
   const target = now?.split(' ')[0] ?? topic;
   const doc = COMMANDS.find((c) => c.name === target);
-  if (doc === undefined) return CLI_USAGE;
+  if (doc === undefined) {
+    return CLI_USAGE;
+  }
   return [
     `usage:  reticle ${doc.synopsis}`,
     ...(now === undefined ? [] : [`        (\`reticle ${topic}\` is now \`reticle ${now}\`)`]),

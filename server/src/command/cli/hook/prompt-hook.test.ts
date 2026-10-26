@@ -35,8 +35,13 @@ const history = (dir: string): unknown[] =>
     .split('\n')
     .map((line) => JSON.parse(line) as unknown);
 
-const run = (agent: string, payload: unknown, cwd = '/nowhere', env: NodeJS.ProcessEnv = {}) =>
-  capturePrompt(agent, JSON.stringify(payload), { cwd, env, now: () => 1_000 });
+const run = (
+  agent: string,
+  payload: unknown,
+  cwd = '/nowhere',
+  env: NodeJS.ProcessEnv = {},
+  at = 1_000,
+) => capturePrompt(agent, JSON.stringify(payload), { cwd, env, now: () => at });
 
 describe('the prompt in each agent payload', () => {
   it('reads the prompt and the folder each agent sends', () => {
@@ -84,6 +89,16 @@ describe('capturing a prompt', () => {
     expect(history(dir)).toEqual([{ at: 1_000, agent: 'claude-code', request: PROMPT }]);
   });
 
+  it('moves a full history aside and starts a new one', () => {
+    const dir = project();
+    mkdirSync(join(dir, '.reticle'), { recursive: true });
+    const old = `${'x'.repeat(3 * 1024 * 1024)}\n`;
+    writeFileSync(join(dir, '.reticle', 'requests.jsonl'), old);
+    run('claude-code', { prompt: PROMPT, cwd: dir });
+    expect(readFileSync(join(dir, '.reticle', 'requests.1.jsonl'), 'utf8')).toBe(old);
+    expect(history(dir)).toEqual([{ at: 1_000, agent: 'claude-code', request: PROMPT }]);
+  });
+
   it('redacts a secret before anything is written', () => {
     const dir = project();
     run('codex', { prompt: 'deploy with api_key=sk_live_abcdefghijklmnop1234 now', cwd: dir });
@@ -92,6 +107,15 @@ describe('capturing a prompt', () => {
     expect(readFileSync(join(dir, '.reticle', 'requests.jsonl'), 'utf8')).not.toContain(
       'sk_live_abcdefghijklmnop1234',
     );
+  });
+
+  it('keeps the prompts out of git before any daemon has run', () => {
+    const dir = project();
+    run('claude-code', { prompt: PROMPT, cwd: dir });
+    const ignore = readFileSync(join(dir, '.reticle', '.gitignore'), 'utf8').split('\n');
+    for (const name of ['request.json', 'requests.jsonl', 'requests.1.jsonl']) {
+      expect(ignore, name).toContain(name);
+    }
   });
 
   it('finds the project from a folder inside it', () => {
@@ -137,6 +161,43 @@ describe('capturing a prompt', () => {
     ).toEqual([]);
   });
 
+  it('keeps a prompt that starts with a tag the user wrote', () => {
+    const dir = project();
+    const jsx = '<Button> must be disabled until the form is valid';
+    expect(run('claude-code', { prompt: jsx, cwd: dir }).written).toEqual([join(dir, '.reticle')]);
+    expect(PromptContextSchema.parse(request(dir)).request).toBe(jsx);
+    expect(
+      run('claude-code', { prompt: '<command-name>/clear</command-name>', cwd: dir }, dir, {}, 9e9)
+        .written,
+    ).toEqual([]);
+    expect(
+      run(
+        'claude-code',
+        { prompt: '<system-reminder>\nx</system-reminder>', cwd: dir },
+        dir,
+        {},
+        9e9,
+      ).written,
+    ).toEqual([]);
+  });
+
+  it('keeps every prompt in the history, oldest first', () => {
+    const dir = project();
+    run('claude-code', { prompt: 'first', cwd: dir }, dir, {}, 1_000);
+    run('claude-code', { prompt: 'second', cwd: dir }, dir, {}, 2_000);
+    expect(history(dir)).toEqual([
+      { at: 1_000, agent: 'claude-code', request: 'first' },
+      { at: 2_000, agent: 'claude-code', request: 'second' },
+    ]);
+  });
+
+  it('keeps a prompt sent again after the duplicate window', () => {
+    const dir = project();
+    run('claude-code', { prompt: PROMPT, cwd: dir }, dir, {}, 1_000);
+    run('claude-code', { prompt: PROMPT, cwd: dir }, dir, {}, 1_000 + 10_001);
+    expect(history(dir)).toHaveLength(2);
+  });
+
   it('honours the project setting and the machine switch', () => {
     const off = project({ projectId: 'shop-1', promptCapture: false });
     expect(run('claude-code', { prompt: PROMPT, cwd: off }).written).toEqual([]);
@@ -161,5 +222,27 @@ describe('capturing a prompt', () => {
     run('claude-code', { prompt: 'word '.repeat(10_000), cwd: dir });
     const kept = PromptContextSchema.parse(request(dir));
     expect(kept.request?.length).toBeLessThanOrEqual(20_000);
+  });
+});
+
+/*
+ * Writers run detached and can finish out of order. The newest prompt must stay the request, and
+ * every prompt must reach the history.
+ */
+describe('prompts kept out of order', () => {
+  it('keeps the newest as the request and every one in the history', () => {
+    const dir = project();
+    capturePrompt('claude-code', JSON.stringify({ prompt: 'second', cwd: dir }), {
+      cwd: dir,
+      env: {},
+      now: () => 2_000,
+    });
+    capturePrompt('claude-code', JSON.stringify({ prompt: 'first', cwd: dir }), {
+      cwd: dir,
+      env: {},
+      now: () => 1_000,
+    });
+    expect(request(dir)).toMatchObject({ request: 'second', at: 2_000 });
+    expect(history(dir)).toHaveLength(2);
   });
 });

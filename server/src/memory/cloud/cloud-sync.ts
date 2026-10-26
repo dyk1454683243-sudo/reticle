@@ -219,7 +219,8 @@ export async function syncRunToCloud(
         'content-type': 'application/json',
         authorization: `Bearer ${config.apiKey}`,
       },
-      // The prompt context leaves the machine only when the project opted in.
+      // The prompt context leaves with the run when it was captured shared: on by default for a
+      // linked project, off with `"shareRequests": false`.
       body: JSON.stringify(shareableRun(run)),
     });
     return res.ok

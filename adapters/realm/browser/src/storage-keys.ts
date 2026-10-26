@@ -17,6 +17,8 @@ export const ReticleStorageKey = {
   PRESENTER_LOG_OWNER: 'reticle-presenter-log-owner',
   PRESENTER_SETTINGS: 'reticle-presenter-settings',
   PRESENTER_MINIMISED: 'reticle-presenter-minimised',
+  /** The person left the HUD panel open, in this browser. Absent means closed. */
+  PRESENTER_OPEN: 'reticle-presenter-open',
   /** The HUD page that was open, and whether Run/Stop had focus, across a drive's reloads. */
   PRESENTER_VIEW: 'reticle-presenter-view',
   CAROUSEL_DISMISSED: 'reticle.carousel.dismissed',

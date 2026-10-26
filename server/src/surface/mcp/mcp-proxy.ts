@@ -8,7 +8,9 @@ import {
   drainLines,
   MAX_STDIN_LINE_BYTES,
   parseLine as parseJsonRpc,
+  HandshakeReplay,
 } from './proxy/proxy-handshake.js';
+export { HandshakeReplay, RECONNECT_INITIALIZE_ID } from './proxy/proxy-handshake.js';
 import { isToolCallRequest, isToolsListRequest, ToolCatalogCache } from './tool-catalog-cache.js';
 import { rememberEnumerated, rememberProxyStarted, rememberToolCalled } from './attach-memory.js';
 import { toolsChangedNotification } from './proxy/proxy-handshake.js';
@@ -18,16 +20,27 @@ import {
   MCP_SHUTDOWN_EVENT,
   ReticleEnv,
   CONTRACT_FINGERPRINT,
+  ProxyExitReason,
+  PROXY_ID_PARAM,
 } from '@reticlehq/core';
-import { SseFrameParser } from './sse-frame-parser.js';
-export { SseFrameParser, type SseFrame } from './sse-frame-parser.js';
-export { probeDaemon, waitForDaemon, waitForDaemonBind } from './proxy/proxy-daemon-probe.js';
+import { SseFrameParser, buildSessionUrl } from './sse-frame-parser.js';
+export { SseFrameParser, buildSessionUrl, type SseFrame } from './sse-frame-parser.js';
+export {
+  daemonProcessAlive,
+  probeDaemon,
+  waitForDaemon,
+  waitForDaemonBind,
+} from './proxy/proxy-daemon-probe.js';
 import { probeDaemon } from './proxy/proxy-daemon-probe.js';
 import { SERVER_VERSION } from '@/command/version/identity/server-version.js';
 import { buildServerInstructions, localizeInstructions } from './server-instructions.js';
 import { hasAnyProjectConnectedBefore } from '@/memory/recall/prior/connection-memory.js';
 import { projectIdsAt } from '@/command/cli/ports/resolve/cli-port.js';
-import { PEER_VERSION_PARAM, PEER_CONTRACT_PARAM } from '@/command/version/peer-announce.js';
+import {
+  PEER_VERSION_PARAM,
+  PEER_CONTRACT_PARAM,
+  agentSessionQuery,
+} from '@/command/version/peer-announce.js';
 import {
   onStreamDrop,
   onClientRequest,
@@ -37,8 +50,16 @@ import {
   OnRequest,
 } from './proxy/proxy-lifecycle.js';
 import { describePresence, probePresence } from '@/command/daemon/binding/port-presence.js';
-import { flushProxySessionMetrics } from '@/telemetry/proxy-telemetry.js';
+import {
+  PROXY_ID,
+  flushProxyExit,
+  noteProxyDrop,
+  noteProxyToolCall,
+} from '@/telemetry/proxy-telemetry.js';
+export { flushProxyExit, reportWakeRefused } from '@/telemetry/proxy-telemetry.js';
 import { detectStack } from '@/telemetry/feedback-context.js';
+import type { ProxyBoot } from './proxy/proxy-boot.js';
+export type { ProxyBoot } from './proxy/proxy-boot.js';
 /**
  * The same `/status` probe `doctor`, `status` and `kill` ask with. Reused rather than re-written:
  * the whole defect this import closes was the proxy answering a DIFFERENT question from every other
@@ -58,9 +79,10 @@ export {
   setProxyLogPort,
 } from './proxy/proxy-log.js';
 import { proxyLog } from './proxy/proxy-log.js';
-import { OutageReason, OutageStage, reportMcpOutage } from './faults/mcp-outage.js';
+import { OutageReason, OutageStage, reportMcpOutage, type DropCause } from './faults/mcp-outage.js';
 import { postToSession } from './proxy/mcp-post-transport.js';
-import { MSG_DRIVE_MAY_BE_RUNNING, isHarnessDriveCall } from './proxy/drive-calls.js';
+import { PendingRequests, streamLossReplies, transportLossReply } from './proxy/drive-calls.js';
+export { PendingRequests, streamLossReplies } from './proxy/drive-calls.js';
 import { reconnectDelayMs } from './proxy/proxy-backoff.js';
 import { PROXY_IDLE_EXIT_EVENT, ProxyIdleExit, resolveProxyIdleExitMs } from './proxy-idle-exit.js';
 export { reconnectDelayMs } from './proxy/proxy-backoff.js';
@@ -91,10 +113,6 @@ export const MAX_RECONNECT_ATTEMPTS = ((): number => {
   return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_RECONNECT_ATTEMPTS;
 })();
 
-/** JSON-RPC id the proxy uses for its own replayed `initialize` — never one the client could send. */
-export const RECONNECT_INITIALIZE_ID = '__reticle_proxy_reinit';
-
-const INITIALIZE_METHOD = 'initialize';
 /**
  * How long the handshake waits on the daemon before the proxy answers it.
  *
@@ -103,118 +121,6 @@ const INITIALIZE_METHOD = 'initialize';
  * past 25s with nothing on stderr, and the reported client gave up at 60s having run no tools.
  */
 const LOCAL_HANDSHAKE_MS = 12_000;
-const INITIALIZED_METHOD = 'notifications/initialized';
-
-/**
- * JSON-RPC requests forwarded on behalf of the client that have not been answered yet.
- *
- * Only used at shutdown, where it is the difference between "the client closed stdin" and "the client
- * closed stdin and we dropped its `tools/list` on the floor while reporting exit 0". A request has an
- * id AND a method; a notification has no id and is owed nothing; a response has an id and no method.
- */
-export class PendingRequests {
-  #ids = new Set<string>();
-  /** The pending requests that start or poll a Harness drive, which outlives a lost connection. */
-  #drives = new Set<string>();
-
-  observeOutbound(line: string): void {
-    const msg = parseJsonRpc(line);
-    if (null === msg || msg.id === undefined || msg.method === undefined) return;
-    const id = JSON.stringify(msg.id);
-    this.#ids.add(id);
-    if (isHarnessDriveCall(msg)) this.#drives.add(id);
-  }
-
-  /** Whether this unanswered request asked for a Harness drive. */
-  isDrive(id: unknown): boolean {
-    return this.#drives.has(JSON.stringify(id));
-  }
-
-  observeInbound(line: string): void {
-    const msg = parseJsonRpc(line);
-    if (null === msg || msg.id === undefined) return;
-    this.#ids.delete(JSON.stringify(msg.id));
-  }
-
-  get unanswered(): string[] {
-    return [...this.#ids];
-  }
-
-  /**
-   * Claim ONE unanswered id, so exactly one path may answer it. False means somebody already did —
-   * a duplicate response to one id is a protocol violation, not a belt-and-braces retry.
-   */
-  take(id: unknown): boolean {
-    this.#drives.delete(JSON.stringify(id));
-    return this.#ids.delete(JSON.stringify(id));
-  }
-
-  /** Take every unanswered id and forget them, so the same request is failed at most once. */
-  drain(): string[] {
-    const ids = [...this.#ids];
-    this.#ids.clear();
-    return ids;
-  }
-
-  /** Forget which requests were drives, once their replies are written. */
-  clearDrives(): void {
-    this.#drives.clear();
-  }
-}
-
-/**
- * JSON-RPC errors for every request that was in flight when the stream died.
- *
- * These are unrecoverable BY CONSTRUCTION: the daemon builds a fresh MCP session per SSE
- * connection, so the reconnected session has never seen them. Re-sending them is not an option
- * either — a `reticle_act` that already clicked would click twice, and inventing a second action in
- * somebody's app is worse than reporting a failure.
- *
- * So the proxy answers them itself, under each request's own id. Found by brute force: killing the
- * daemon under a live client left 20 of 20 concurrent calls hanging until the client's own timeout,
- * with the MCP server still perfectly alive. An agent cannot tell that apart from "still working".
- */
-export function streamLossReplies(
-  pending: PendingRequests,
-  reason: string,
-  nextStep?: string,
-): string[] {
-  const replies = pending.drain().map((id) => {
-    const parsed = JSON.parse(id) as unknown;
-    return transportLossReply(parsed, reason, nextStep, pending.isDrive(parsed));
-  });
-  pending.clearDrives();
-  return replies;
-}
-
-/**
- * -32001: a server-defined error. Not -32603 (internal): nothing went wrong INSIDE the call, the
- * transport under it went away, and the distinction is what tells a caller the action may be safe
- * to retry.
- */
-const TRANSPORT_LOSS_CODE = -32001;
-
-/**
- * The one shape every "the transport ate your call" answer takes, whichever leg died.
- *
- * `nextStep` is appended when the caller knows one. Without it this reply describes a condition and
- * stops there, which is all a first-run user got out of their first ever tool call.
- */
-function transportLossReply(id: unknown, reason: string, nextStep?: string, drive = false): string {
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    id,
-    error: {
-      code: TRANSPORT_LOSS_CODE,
-      message:
-        (drive
-          ? `the daemon connection dropped (${reason}) before this call was answered. ${MSG_DRIVE_MAY_BE_RUNNING}`
-          : `the daemon connection dropped (${reason}) before this call was answered — it did NOT ` +
-            'complete. Reticle is recovering the connection; retry if the action is safe to repeat.') +
-        (nextStep === undefined ? '' : ` ${nextStep}`),
-    },
-  });
-}
 
 /**
  * How long stdin closing gives the daemon to answer what is still in flight.
@@ -270,70 +176,9 @@ export function shouldRetryFirstConnect(error: unknown, elapsedMs: number): bool
 export function queueExpiryNextStep(port: number): string {
   return (
     `No Reticle daemon answered on port ${String(port)}. Retry the call — the next request starts ` +
-    'one. If it keeps failing, run `reticle doctor` in a terminal: it reports what is holding the ' +
-    'port and whether the daemon can start at all.'
+    'one. If it keeps failing, run `npx @reticlehq/server doctor` in a terminal: it reports what ' +
+    'is holding the port and whether the daemon can start at all.'
   );
-}
-
-/**
- * Makes a reconnect invisible to the client.
- *
- * The daemon builds a FRESH `McpServer` per SSE connection, so a reconnected session has never seen
- * the client's `initialize` — every subsequent `tools/call` would hit an uninitialized server. The
- * proxy therefore remembers the handshake the client sent once and replays it into each new session.
- * The replay is re-issued under a reserved id so the daemon's response to it can be dropped rather
- * than reaching the client's stdout, where a duplicate JSON-RPC id would be a protocol violation.
- */
-export class HandshakeReplay {
-  #initialize: string | null = null;
-  #initialized: string | null = null;
-  #pendingReplayId: string | null = null;
-
-  /** Record one outbound client line. Cheap enough to call for every stdin message. */
-  observeOutbound(line: string): void {
-    const msg = parseJsonRpc(line);
-    if (null === msg) return;
-    // The first initialize is the session's identity; a client re-issuing one does not change it.
-    if (msg.method === INITIALIZE_METHOD && null === this.#initialize) this.#initialize = line;
-    else if (msg.method === INITIALIZED_METHOD) this.#initialized = line;
-  }
-
-  /** Lines to POST into a freshly-established session, before any queued client traffic. */
-  replayLines(): string[] {
-    if (null === this.#initialize) return [];
-    const msg = parseJsonRpc(this.#initialize);
-    if (null === msg) return [];
-    this.#pendingReplayId = RECONNECT_INITIALIZE_ID;
-    const reinit = { ...msg, id: RECONNECT_INITIALIZE_ID };
-    return null === this.#initialized
-      ? [JSON.stringify(reinit)]
-      : [JSON.stringify(reinit), this.#initialized];
-  }
-
-  /** True when this inbound daemon line is the echo of our replayed handshake and must not be forwarded. */
-  shouldSuppressInbound(line: string): boolean {
-    if (null === this.#pendingReplayId) return false;
-    const msg = parseJsonRpc(line);
-    if (null === msg || msg.id !== this.#pendingReplayId) return false;
-    this.#pendingReplayId = null; // one response per replay — anything later is not ours to swallow
-    return true;
-  }
-}
-
-/**
- * Turn an `endpoint` frame's data into a POST target, or null when there is nothing usable in it.
- *
- * An empty (or whitespace) data field is the shape a malformed daemon response takes, and it used to
- * be accepted: `postUrl` became `''`, which is not `null`, so the proxy considered itself CONNECTED
- * and posted every subsequent message to the empty string. Each one failed, the queue never armed
- * its deadline because nothing was ever queued, and the agent held a session that could not carry a
- * single call. Refusing the frame keeps the proxy in its disconnected path, which already knows how
- * to reconnect and how to answer what it cannot send.
- */
-export function buildSessionUrl(rawData: string, port: number): string | null {
-  const trimmed = rawData.trim();
-  if ('' === trimmed) return null;
-  return trimmed.startsWith('/') ? `http://${LOOPBACK_HOST}:${port}${trimmed}` : trimmed;
 }
 
 /**
@@ -353,9 +198,12 @@ export function buildSessionUrl(rawData: string, port: number): string | null {
  * an unreadable state home must never be the reason a handshake fails, so it degrades to the
  * fresh-install wording rather than throwing.
  */
-function proxyInstructions(port: number): string {
+function proxyInstructions(port: number, advertised?: readonly string[]): string {
   try {
-    return buildServerInstructions(instructionStateAt(port));
+    return buildServerInstructions({
+      ...instructionStateAt(port),
+      ...(advertised === undefined ? {} : { advertised }),
+    });
   } catch {
     return buildServerInstructions({ previouslyConnected: false });
   }
@@ -376,16 +224,26 @@ export function instructionStateAt(
 
 /** An `initialize` reply re-briefed for the AGENT's directory; see localizeInstructions. */
 function withLocalBriefing(line: string, appHere: boolean): string {
-  if (!line.includes('"instructions"')) return line;
+  if (!line.includes('"instructions"')) {
+    return line;
+  }
   try {
     const msg: unknown = JSON.parse(line);
-    if (null === msg || 'object' !== typeof msg || !('result' in msg)) return line;
+    if (null === msg || 'object' !== typeof msg || !('result' in msg)) {
+      return line;
+    }
     const result: unknown = msg.result;
-    if (null === result || 'object' !== typeof result || !('instructions' in result)) return line;
+    if (null === result || 'object' !== typeof result || !('instructions' in result)) {
+      return line;
+    }
     const { instructions } = result;
-    if ('string' !== typeof instructions) return line;
+    if ('string' !== typeof instructions) {
+      return line;
+    }
     const localized = localizeInstructions(instructions, appHere);
-    if (localized === instructions) return line;
+    if (localized === instructions) {
+      return line;
+    }
     return JSON.stringify({ ...msg, result: { ...result, instructions: localized } });
   } catch {
     return line;
@@ -397,13 +255,14 @@ function withStateDirDiagnostic(reason: string): string {
 }
 
 export function startMcpProxy(
-  port: number,
+  bootPort: number,
   /**
    * Bring a daemon back before reconnecting. Without it the proxy retried a DEAD port until the
    * budget ran out and then killed itself, taking the agent's whole Reticle surface with it — the
-   * failure mode for a daemon that crashed, was stopped, or shut itself down as idle.
+   * failure mode for a daemon that crashed, was stopped, or shut itself down as idle. A returned
+   * port is where the daemon now is; the proxy dials it from then on.
    */
-  ensureDaemon?: () => Promise<void>,
+  ensureDaemon?: () => Promise<number | void>,
   /** Observe the real shutdown boundary in transport tests without terminating their worker. */
   exitProcess: (code: number) => void = (code) => process.exit(code),
   /**
@@ -415,7 +274,13 @@ export function startMcpProxy(
    * function with no resilience installed.
    */
   onUsableSession: () => void = () => undefined,
+  /**
+   * The daemon start that runs while the proxy already reads stdin. A client that does not wait
+   * for MCP servers gets the handshake and the tool list before the daemon is up.
+   */
+  boot?: ProxyBoot,
 ): Promise<never> {
+  let port = bootPort;
   return new Promise<never>((_resolve, reject) => {
     // A client just started us, which is the only honest evidence that Reticle is registered with
     // one at all: a config entry proves somebody wrote JSON, not that a client ever read it. Paired
@@ -445,7 +310,7 @@ export function startMcpProxy(
      * will never serve SSE, however long anybody waits. Declared up here with the other closure
      * state so the drop path can reach it without a temporal-dead-zone hazard.
      */
-    let deliverHandshakeLocally: ((reason: string) => void) | undefined;
+    let deliverHandshakeLocally: ((reason: string, tools?: unknown[]) => void) | undefined;
     const stdinQueue: string[] = [];
     /**
      * Fail anything still queued after QUEUE_WAIT_MS. Re-armed on every push and cleared on flush,
@@ -453,7 +318,9 @@ export function startMcpProxy(
      */
     let queueTimer: ReturnType<typeof setTimeout> | undefined;
     const clearQueueTimer = (): void => {
-      if (queueTimer !== undefined) clearTimeout(queueTimer);
+      if (queueTimer !== undefined) {
+        clearTimeout(queueTimer);
+      }
       queueTimer = undefined;
     };
     /**
@@ -466,7 +333,9 @@ export function startMcpProxy(
      */
     const expireQueue = (reason: string): void => {
       clearQueueTimer();
-      if (stopped || 0 === stdinQueue.length) return;
+      if (stopped || 0 === stdinQueue.length) {
+        return;
+      }
       // Drop what we could never send, and answer it, so the caller is never left guessing.
       stdinQueue.splice(0);
       for (const reply of streamLossReplies(pending, reason, queueExpiryNextStep(port))) {
@@ -486,7 +355,9 @@ export function startMcpProxy(
       });
     };
     const armQueueTimer = (): void => {
-      if (queueTimer !== undefined) return; // the oldest entry owns the deadline
+      if (queueTimer !== undefined) {
+        return;
+      } // the oldest entry owns the deadline
       queueTimer = setTimeout(() => {
         queueTimer = undefined;
         expireQueue('no daemon could be reached');
@@ -496,12 +367,14 @@ export function startMcpProxy(
     const replay = new HandshakeReplay();
     const appHere = detectStack(process.cwd()).stack !== undefined;
     const pending = new PendingRequests();
-    const quit = (code: number): void => {
-      if (stopped) return;
+    const quit = (code: number, reason: ProxyExitReason): void => {
+      if (stopped) {
+        return;
+      }
       stopped = true;
       idleExit.stop();
       // Await: fire-and-forget here is how daemon_stopped never arrived.
-      void flushProxySessionMetrics().finally(() => exitProcess(code));
+      void flushProxyExit(reason).finally(() => exitProcess(code));
     };
     const idleExit = new ProxyIdleExit({
       graceMs: resolveProxyIdleExitMs(process.env[ReticleEnv.MCP_PROXY_IDLE]),
@@ -512,7 +385,7 @@ export function startMcpProxy(
           idleMs,
           note: 'the client link was quiet for the configured idle window with no work in flight; exiting the abandoned proxy',
         });
-        quit(0);
+        quit(0, ProxyExitReason.IDLE);
       },
     });
     idleExit.start();
@@ -530,12 +403,9 @@ export function startMcpProxy(
     /**
      * What the outage had already cost when the proxy went dormant.
      *
-     * The wake path clears `attempts` before dialling, and it must: a wake is a fresh retry budget,
-     * and sharing the previous outage's spent budget would put the proxy dormant again on its first
-     * failure. But the recovery report is guarded on `attempts > 0`, so clearing it also erased the
-     * evidence that there was anything to recover FROM — and dormancy is the commonest outage class
-     * we have, which made every recovery of that class invisible. Carried across the wake so the
-     * budget resets and the accounting does not.
+     * `wake` clears `attempts`, because a wake gets a fresh retry budget. The recovery report needs
+     * `attempts > 0`, so the clear also hid every recovery from dormancy, the most common outage.
+     * This count goes across the wake: the budget resets, and the accounting does not.
      */
     let attemptsBeforeDormant = 0;
     /**
@@ -556,10 +426,14 @@ export function startMcpProxy(
      */
     const forward = (url: string, line: string): void => {
       void postToSession(url, line).then((failure) => {
-        if (null === failure) return;
+        if (null === failure) {
+          return;
+        }
         const msg = parseJsonRpc(line);
         const drive = null !== msg && pending.isDrive(msg.id);
-        if (null === msg || msg.id === undefined || !pending.take(msg.id)) return;
+        if (null === msg || msg.id === undefined || !pending.take(msg.id)) {
+          return;
+        }
         // No outage is reported here, deliberately. A POST leg that died while the SSE stream is
         // still up is not the agent losing its tools: `postSocketFailures` on the session summary
         // already counts it, and reporting it as a lost stream both double-counted and — because
@@ -593,8 +467,9 @@ export function startMcpProxy(
         // Report the recovery BEFORE the counter is cleared: `attempts` is what coming back actually
         // cost, and it is the only number that can falsify the drop event. See OutageStage.RECOVERED.
         const cost = attempts + attemptsBeforeDormant;
-        if (cost > 0)
+        if (cost > 0) {
           reportMcpOutage(OutageStage.RECOVERED, { reason: lastDropReason, attempts: cost });
+        }
         attempts = 0;
         attemptsBeforeDormant = 0;
         // The disconnects behind us were reconnects, not a runaway. Counting them for the life of
@@ -603,9 +478,13 @@ export function startMcpProxy(
         onUsableSession();
         // The new session's McpServer has never seen the client's initialize — replay it first, then
         // flush whatever the client sent while we were reconnecting.
-        for (const line of replay.replayLines()) forward(url, line);
+        for (const line of replay.replayLines()) {
+          forward(url, line);
+        }
         clearQueueTimer();
-        for (const queued of stdinQueue.splice(0)) forward(url, queued);
+        for (const queued of stdinQueue.splice(0)) {
+          forward(url, queued);
+        }
         // The client may be holding a tool list we invented. See toolsChangedNotification.
         const relist = toolsChangedNotification(toolsAnnouncedLocally);
         if (relist !== null) {
@@ -634,9 +513,12 @@ export function startMcpProxy(
       }
     }
 
-    function scheduleReconnect(rawReason: string, detail?: string): void {
-      if (stopped) return;
+    function scheduleReconnect(rawReason: string, detail?: string, cause?: DropCause): void {
+      if (stopped) {
+        return;
+      }
       postUrl = null;
+      noteProxyDrop();
       // A stream the daemon warned us about is a planned shutdown, not a fault. The socket looks
       // identical either way from here, so this flag is the only thing that can tell them apart —
       // and without it every scheduled retirement was counted as an outage the agent suffered.
@@ -656,17 +538,19 @@ export function startMcpProxy(
       // what the old one owed and silence here is permanent.
       stdinQueue.splice(0);
       const lost = streamLossReplies(pending, reason);
-      for (const reply of lost) emit(reply);
+      for (const reply of lost) {
+        emit(reply);
+      }
       // How many calls this drop actually killed. Zero means the agent could not feel it.
       const pendingLost = lost.length;
       // Once per process: this session has now lost its tools at least once, which is the number
       // that says whether the transport work actually landed for real users. `pendingLost` is the
       // part an agent can FEEL — almost every measured drop killed nothing in flight.
-      reportMcpOutage(OutageStage.FIRST, { reason, attempts, pendingLost });
+      reportMcpOutage(OutageStage.FIRST, { reason, attempts, pendingLost, ...cause });
       // The severe stage: we are about to stop retrying. Reported so the share of sessions where
       // MCP never came back on its own is a number rather than an anecdote.
       if (attempts > MAX_RECONNECT_ATTEMPTS) {
-        reportMcpOutage(OutageStage.BUDGET_SPENT, { reason, attempts, pendingLost });
+        reportMcpOutage(OutageStage.BUDGET_SPENT, { reason, attempts, pendingLost, ...cause });
         // Stop RETRYING, never stop SERVING. See onReconnectBudgetSpent: exiting here made the
         // client mark the MCP server disconnected and left a human to reconnect it by hand.
         dormant = onReconnectBudgetSpent() === OnDrop.DORMANT;
@@ -717,7 +601,7 @@ export function startMcpProxy(
     function connect(first: boolean): void {
       // Announce this process to the daemon on the connect we already make — it is the single judge
       // of version skew, and this is the only moment it learns the agent's MCP server exists.
-      const announce = `${MCP_SSE_PATH}?${PEER_VERSION_PARAM}=${encodeURIComponent(SERVER_VERSION)}&${PEER_CONTRACT_PARAM}=${encodeURIComponent(CONTRACT_FINGERPRINT)}`;
+      const announce = `${MCP_SSE_PATH}?${PEER_VERSION_PARAM}=${encodeURIComponent(SERVER_VERSION)}&${PEER_CONTRACT_PARAM}=${encodeURIComponent(CONTRACT_FINGERPRINT)}&${PROXY_ID_PARAM}=${PROXY_ID}${agentSessionQuery(process.env)}`;
       /**
        * ONE reconnect per connect attempt, whoever notices the failure first.
        *
@@ -746,21 +630,27 @@ export function startMcpProxy(
       let responded = false;
       const req = http.get({ host: LOOPBACK_HOST, port, path: announce }, (res) => {
         responded = true;
-        if (!first) proxyLog('reticle_mcp_proxy_reconnected', { port });
+        if (!first) {
+          proxyLog('reticle_mcp_proxy_reconnected', { port });
+        }
         res.setEncoding('utf8');
-        const drop = (reason: string, detail?: string): void => {
-          if (settled) return;
+        const drop = (reason: string, detail?: string, cause?: DropCause): void => {
+          if (settled) {
+            return;
+          }
           settled = true;
           // What the dead session owed is settled inside scheduleReconnect, so the other half of the
           // socket's death pays exactly the same debt when it is the one that notices first.
-          scheduleReconnect(reason, detail);
+          scheduleReconnect(reason, detail, cause ?? { responded });
         };
         const sse = new SseFrameParser();
         res.on('data', (chunk: string) => {
-          for (const frame of sse.push(chunk)) onSseEvent(frame.event, frame.data, port);
+          for (const frame of sse.push(chunk)) {
+            onSseEvent(frame.event, frame.data, port);
+          }
         });
         res.on('end', () => drop('sse_ended'));
-        res.on('error', (err) => drop('sse_error', err.message));
+        res.on('error', (err) => drop('sse_error', err.message, { error: err, responded }));
         // A socket dying under us (daemon killed, network stack reset) emits NEITHER `end` nor
         // `error` — only `aborted`/`close`. Listening for just the first two is why the proxy sat
         // there afterwards holding a dead stream. `settled` keeps the clean case single-fire.
@@ -771,8 +661,14 @@ export function startMcpProxy(
       // The very first connect failing means there is no daemon to talk to — that is a startup
       // failure the caller handles. Later ones are just the daemon bouncing: keep retrying.
       req.on('error', (err) => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
+        if (first && !responded && boot !== undefined) {
+          bootFailed(); // The start is done, so nothing is still booting on this port.
+          return;
+        }
         if (first && !responded) {
           // A refused port on the very first connect is a daemon still booting, not a failure. Keep
           // chasing it: nothing else will, because only a fresh client request re-probes the port
@@ -792,11 +688,59 @@ export function startMcpProxy(
           reject(err);
           return;
         }
-        scheduleReconnect('connect_error', err.message);
+        // A reset of a stream that was already serving also lands here, because the request sees
+        // the error before the response closes. That is a dropped stream, not a refused connect.
+        const reason = responded ? OutageReason.SSE_RESET : OutageReason.CONNECT_ERROR;
+        scheduleReconnect(reason, err.message, { error: err, responded });
       });
     }
 
-    connect(true);
+    /** The ONLY path that starts a daemon (see proxy-lifecycle.ts). `endpoint` flushes the queue. */
+    function wake(): void {
+      dormant = false;
+      // Budget reset, accounting preserved. See attemptsBeforeDormant.
+      attemptsBeforeDormant += attempts;
+      attempts = 0;
+      void (ensureDaemon?.() ?? Promise.resolve())
+        .then((resolved) => {
+          port = resolved ?? port;
+          return connect(false);
+        })
+        .catch((err: unknown) => {
+          dormant = true;
+          const reason = withStateDirDiagnostic(err instanceof Error ? err.message : String(err));
+          proxyLog('reticle_mcp_proxy_wake_failed', { port, error: reason });
+          // The failure IS the answer to everything the wake was for. Do not wait for the timer.
+          expireQueue(reason);
+        });
+    }
+
+    if (boot === undefined) {
+      connect(true);
+    } else {
+      // Dial when the start is done, at the port it settled on. A failed start dials too, because
+      // only the dial can tell the two cases apart. A refused dial means no daemon: see bootFailed.
+      // A process that accepts and then drops the stream is a daemon that flaps, and the normal
+      // retry loop backs off from it and logs each retry.
+      void boot.ready
+        .catch(() => undefined)
+        .then((resolved) => {
+          port = resolved ?? port;
+          connect(true);
+        });
+    }
+
+    /**
+     * The first dial after the start was refused, so no daemon is there. For example, it died
+     * before or just after it served. The first-connect retry never starts a daemon, so a queued
+     * call waited until the queue expired. Go dormant, and wake now for a request that waits.
+     */
+    function bootFailed(): void {
+      dormant = true;
+      if (0 < stdinQueue.length) {
+        wake();
+      }
+    }
 
     // ── stdin reader ─────────────────────────────────────────────────────────
     process.stdin.setEncoding('utf8');
@@ -817,11 +761,15 @@ export function startMcpProxy(
      * and `handshakeAnswered` keeps us from answering twice.
      */
     const armLocalHandshake = (line: string): void => {
-      if (handshakeAnswered) return;
+      if (handshakeAnswered) {
+        return;
+      }
       // Only an `initialize` REQUEST is ours to answer. Asked with no instructions because the ones
       // we will actually send name the reason the daemon failed, and the reason is not known until
       // the deliver closure runs — see degradedInstructions.
-      if (null === localInitializeResponse(line, '')) return;
+      if (null === localInitializeResponse(line, '')) {
+        return;
+      }
       // Take the debt NOW, not when the timer fires.
       //
       // Three paths can answer this id — the daemon, the stream-loss drain, and the timer below —
@@ -834,18 +782,33 @@ export function startMcpProxy(
       // established first, the `endpoint` handler sets `handshakeAnswered` before the queue is
       // flushed, which disarms the timer and leaves the daemon's own reply the only one.
       const claimed = parseJsonRpc(line);
-      if (claimed?.id !== undefined) pending.take(claimed.id);
-      deliverHandshakeLocally = (reason: string): void => {
-        if (handshakeAnswered || postUrl !== null) return;
+      if (claimed?.id !== undefined) {
+        pending.take(claimed.id);
+      }
+      deliverHandshakeLocally = (reason: string, tools?: unknown[]): void => {
+        if (handshakeAnswered || postUrl !== null) {
+          return;
+        }
         // Built here, not at arm time, so the notice can name WHY no daemon answered. The client
         // reads `instructions` exactly once, at initialize, and this response is the only one it
         // will ever get — so a handshake that does not say it is unbacked never says it at all.
-        // See degradedInstructions for the field report this closes.
+        // See degradedInstructions for the field report this closes. With `tools`, the daemon is
+        // starting: the instructions are the healthy ones, and the list is the daemon's own.
         const response = localInitializeResponse(
           line,
-          degradedInstructions(proxyInstructions(port), port, withStateDirDiagnostic(reason)),
+          tools === undefined
+            ? degradedInstructions(proxyInstructions(port), port, withStateDirDiagnostic(reason))
+            : proxyInstructions(
+                port,
+                tools.map((tool) => (tool as { name?: unknown }).name as string),
+              ),
         );
-        if (null === response) return;
+        if (null === response) {
+          return;
+        }
+        if (tools !== undefined) {
+          catalog.remember(tools);
+        }
         handshakeAnswered = true;
         deliverHandshakeLocally = undefined;
         // The catalog we are about to serve is ours, not the daemon's, so it has to be corrected
@@ -857,22 +820,40 @@ export function startMcpProxy(
         // handshake: `replayLines` re-issues it under a distinct id and suppresses the echo.
         for (let i = stdinQueue.length - 1; i >= 0; i--) {
           const queued = stdinQueue[i];
-          if (queued !== undefined && isHandshakeLine(queued)) stdinQueue.splice(i, 1);
+          if (queued !== undefined && isHandshakeLine(queued)) {
+            stdinQueue.splice(i, 1);
+          }
         }
         proxyLog('reticle_mcp_local_handshake', { port, reason });
         emit(response);
+        // A `tools/list` that came before this answer is in the queue. Answer it from the catalog.
+        for (let i = stdinQueue.length - 1; i >= 0; i--) {
+          const cached = catalog.answer(stdinQueue[i] ?? '');
+          if (cached !== null) {
+            stdinQueue.splice(i, 1);
+            emit(cached);
+          }
+        }
       };
       setTimeout(
         () => deliverHandshakeLocally?.('daemon did not answer in time'),
         LOCAL_HANDSHAKE_MS,
       ).unref();
+      // Our own daemon is starting on a free port. Answer now: some clients start their turn before
+      // a daemon can be up, and they do not wait for MCP servers.
+      void boot?.spawning
+        .then(boot.tools)
+        .then((tools) => deliverHandshakeLocally?.('the daemon is starting', tools))
+        .catch(() => undefined);
     };
 
     let stdinBuffer = '';
     let stdinDiscarding = false;
 
     process.stdin.on('data', (chunk: string) => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
       idleExit.noteTraffic();
       // Not `(buffer + chunk).split()` inline — that rescans everything held on every chunk, so one
       // large line cost O(n²) in its own size and pinned the event loop for tens of seconds, during
@@ -889,18 +870,25 @@ export function startMcpProxy(
       }
       for (const line of drained.lines) {
         const trimmed = line.trim();
-        if ('' === trimmed) continue;
+        if ('' === trimmed) {
+          continue;
+        }
         replay.observeOutbound(trimmed);
         pending.observeOutbound(trimmed);
         // The ARRIVAL of the request, not the delivery of an answer: "this client asked for the tool
         // list" is the fact `status` reports on, and a request that arrived and then failed is a
         // different problem with its own diagnosis. Recording the answer instead would let a host
         // that never asks look identical to one that asked and was refused.
-        if (isToolsListRequest(trimmed)) rememberEnumerated(reticleStateHome(), port);
+        if (isToolsListRequest(trimmed)) {
+          rememberEnumerated(reticleStateHome(), port);
+        }
         // The hop every other check misses. Recorded on the REQUEST rather than a reply, because
         // the question is whether anything ever left the agent — a call that leaves and gets no
         // answer is a different fault from one that was never made, and only this side sees it.
-        if (isToolCallRequest(trimmed)) rememberToolCalled(reticleStateHome(), port);
+        if (isToolCallRequest(trimmed)) {
+          rememberToolCalled(reticleStateHome(), port);
+          noteProxyToolCall();
+        }
         const action = onClientRequest(postUrl !== null, dormant);
         if (action === OnRequest.SEND && postUrl !== null) {
           forward(postUrl, trimmed);
@@ -923,28 +911,8 @@ export function startMcpProxy(
         // Answer it ourselves after a bounded wait; the daemon still receives the client's own
         // initialize when a session is finally established (replayLines).
         armLocalHandshake(trimmed);
-        // WAKE is the ONLY path allowed to start a daemon — see proxy-lifecycle.ts. The queue is
-        // flushed once the new session's `endpoint` frame arrives.
         if (action === OnRequest.WAKE) {
-          dormant = false;
-          // Budget reset, accounting preserved. See attemptsBeforeDormant.
-          attemptsBeforeDormant += attempts;
-          attempts = 0;
-          void (ensureDaemon?.() ?? Promise.resolve())
-            .then(() => connect(false))
-            .catch((err: unknown) => {
-              dormant = true;
-              const reason = withStateDirDiagnostic(
-                err instanceof Error ? err.message : String(err),
-              );
-              proxyLog('reticle_mcp_proxy_wake_failed', { port, error: reason });
-              // The wake is the only thing that can start a daemon, so its failure IS the answer to
-              // everything it was woken for. It used to be logged and nothing else: the request sat
-              // out the full QUEUE_WAIT_MS and was then refused by a timer that could only say "no
-              // daemon could be reached" — twenty seconds later, and less true, than the sentence
-              // already in hand.
-              expireQueue(reason);
-            });
+          wake();
         }
       }
     });
@@ -957,9 +925,11 @@ export function startMcpProxy(
     // between the writes made it "work", which is the signature of a teardown race, not of a client
     // that asked for too much. Drain first, and let the exit status carry the truth if it fails.
     process.stdin.on('end', () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
       if (0 === pending.unanswered.length) {
-        quit(0);
+        quit(0, ProxyExitReason.STDIN_END);
         return;
       }
       const deadline = Date.now() + SHUTDOWN_DRAIN_MS;
@@ -967,13 +937,15 @@ export function startMcpProxy(
         const stuck = pending.unanswered;
         if (0 === stuck.length) {
           clearInterval(poll);
-          quit(0);
+          quit(0, ProxyExitReason.STDIN_END);
           return;
         }
-        if (Date.now() < deadline) return;
+        if (Date.now() < deadline) {
+          return;
+        }
         clearInterval(poll);
         proxyLog('reticle_mcp_proxy_unanswered_at_exit', { port, ids: stuck });
-        quit(1);
+        quit(1, ProxyExitReason.STDIN_END);
       }, SHUTDOWN_DRAIN_POLL_MS);
     });
   });

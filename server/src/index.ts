@@ -1,3 +1,4 @@
+import { agentSessionInEnv } from '@/command/version/peer-announce.js';
 import { applyHarnessSwitch, harnessConfigsByRoot } from '@/memory/cloud/harness-config.js';
 import { coveragePercents } from './features/exhaust/ledger.js';
 import { agentWiring } from './portal/session/zero-install-first-call.js';
@@ -17,6 +18,7 @@ import type { Server } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   AGENT_STOPPED_NOTICE,
+  AGENT_DETACH_GRACE_MS,
   RETICLE_DEFAULT_PORT,
   ReticleCommand,
   ReticleDir,
@@ -31,7 +33,6 @@ import { resolveBridgeSecurityWithAutoToken } from './portal/bridge/bridge-secur
 import type { StartOptions } from './start-options.js';
 export type { StartOptions } from './start-options.js';
 import { Bridge } from './portal/bridge/bridge.js';
-import { connectionSkew } from './command/version/version-nudge.js';
 import { SERVER_VERSION } from './command/version/identity/server-version.js';
 import { BaselineStore } from './memory/project/baselines.js';
 import { RecordingStore } from './language/flows/recording/tape/recordings.js';
@@ -49,7 +50,7 @@ import { ReticleRunner } from './judgement/runs/reticle-runner.js';
 import { createRunnerPort } from './judgement/runs/runner-port.js';
 import { RunStore } from './judgement/runs/artifact/run-store.js';
 import { startVerifyServer } from './judgement/runs/verify-server.js';
-import { createMcpServer } from './surface/mcp/mcp.js';
+import { createMcpServer, mcpServerFactoryFor } from './surface/mcp/mcp.js';
 import { instructionStateAt } from './surface/mcp/mcp-proxy.js';
 import { LEASE_ACQUIRE_TOOL } from './surface/tools/lease-tools.js';
 import { attachHudHarness, projectLinkOnly, startChatDrives } from './surface/tools/chat-drives.js';
@@ -60,7 +61,12 @@ import {
   MCP_DISCONNECT_SUMMARY,
 } from './portal/session/session-reaper.js';
 import { wireSessionScope } from './portal/session/no-session-watch.js';
-import { buildIdlePredicate, noteSetupHold } from './command/daemon/lifetime/daemon-usefulness.js';
+import { withDetachGrace } from './surface/agent-presence-grace.js';
+import {
+  buildIdlePredicate,
+  noteAgentPresence,
+  noteSetupHold,
+} from './command/daemon/lifetime/daemon-usefulness.js';
 import { resolveToolSurface } from './surface/tools/tool-surface.js';
 import { statusPayload } from './status-payload.js';
 import type { BrowserPool } from './portal/pool/browser-pool.js';
@@ -98,6 +104,10 @@ export { replayVerdictLine } from './language/flows/replay-from-hud.js';
 export { ReticleTool } from '@reticlehq/core';
 export { RingBuffer } from '@reticlehq/engine/window/ring-buffer.js';
 export { Bridge } from './portal/bridge/bridge.js';
+export type {
+  FollowNavigation,
+  OriginFollowRequest,
+} from './portal/bridge/origin/origin-follow.js';
 export { Session } from './portal/session/session.js';
 export { SessionManager } from './portal/session/session-manager.js';
 export type { SessionInfo, SessionHealth } from './portal/session/session.js';
@@ -106,7 +116,8 @@ export type { RecommendationInputs } from './portal/session/presence/session-rec
 export { TOOLS } from './surface/tools/tools.js';
 export type { ToolDeps, ToolDef } from './surface/tools/tools.js';
 export { createToolInvoker, UNKNOWN_TOOL_ERROR } from './surface/tools/tool-invoker.js';
-export { runTool, SESSION_BOUND_TOOLS, SESSION_EXEMPT_TOOLS } from './surface/tools/invoke-tool.js';
+export { runTool } from './surface/tools/invoke-tool.js';
+export { SESSION_BOUND_TOOLS, SESSION_EXEMPT_TOOLS } from './surface/tools/tool-kit.js';
 export type { ToolInvoker } from './surface/tools/tool-invoker.js';
 
 /**
@@ -180,6 +191,8 @@ export interface RunningServer {
    * the client owns the process and there is no stream to warn. See SharedServer.announceShutdown.
    */
   announceShutdown?: () => void;
+  /** Daemon only: run `handler` when a caller with the pairing token POSTs SHUTDOWN_PATH. */
+  onShutdownRequest?: (handler: () => void) => void;
   close: () => Promise<void>;
 }
 
@@ -296,8 +309,9 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
     bridge.attachSessionCreate((session) => {
       const leasedIds = leasePool.leasedSessionIds();
       const leasedProjects = leasedIds.map((id) => bridge.sessions.get(id)?.projectId);
-      if (shouldGreetWithLeaseNotice(session, leasedIds, leasedProjects))
+      if (shouldGreetWithLeaseNotice(session, leasedIds, leasedProjects)) {
         session.pushNarration(AGENT_ALREADY_DRIVING_ELSEWHERE);
+      }
     });
     const deps = {
       sessions: bridge.sessions,
@@ -313,6 +327,7 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
       artifactRootFor: artifactRootResolver(reticleRoot, { servingDirectory: servingDirectoryOf }),
       now,
       bridgePort: port,
+      nonces: bridge.nonces,
       browserProbe: probeLaunchableChromium,
       // The daemon's OWN project, so a tool can tell "this session is mine" from "this session
       // belongs to a sibling app under the same daemon". contract_save refuses on the second.
@@ -333,8 +348,10 @@ export async function start(options: StartOptions = {}): Promise<RunningServer> 
       },
       log,
     );
+    // Over stdio this process IS the agent's MCP server: the agent's session is in its environment.
+    const agentSession = agentSessionInEnv(process.env);
     const server = createMcpServer(
-      toolDeps,
+      agentSession === undefined ? toolDeps : { ...toolDeps, agentSession },
       profile,
       instructionStateAt(port, bridge.sessions.count()),
     );
@@ -407,7 +424,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     for (const session of bridge.sessions.all()) {
       const root =
         session.artifactRoot ?? options.reticleRoot ?? join(process.cwd(), ReticleDir.ROOT);
-      if ((only ?? root) === root) pushIfMoved(session, () => impactSnapshot(root), ifChanged);
+      if ((only ?? root) === root) {
+        pushIfMoved(session, () => impactSnapshot(root), ifChanged);
+      }
     }
   };
   pushHarnessConfig = repaint;
@@ -424,7 +443,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   // the requested `--http-port` instead of silently ignoring the flag (#687).
   shared.attachStatus((held) => {
     // `init` holds the daemon it is waiting on, so the idle rule cannot shut it down mid-wait.
-    if (held) noteSetupHold(Date.now());
+    if (held) {
+      noteSetupHold(Date.now());
+    }
     const tabs = bridge.sessions.all();
     return statusPayload(
       bridge.sessions.count(),
@@ -444,11 +465,17 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   // prompt into a dead session. A returning agent's next tool call revives the auto-ended session.
   // Track agent presence for the idle-shutdown predicate (below): the daemon is "idle" only when no
   // agent is attached AND no browser tab is connected AND no pool lease is active.
+  // The detach waits a short grace: a proxy that reconnects inside it keeps the sessions.
   let agentConnected = false;
-  shared.attachAgentPresence((connected) => {
-    agentConnected = connected;
-    if (!connected) endAllSessions(bridge.sessions, AGENT_STOPPED_NOTICE);
-  });
+  shared.attachAgentPresence(
+    withDetachGrace((connected) => {
+      agentConnected = connected;
+      noteAgentPresence(Date.now());
+      if (!connected) {
+        endAllSessions(bridge.sessions, AGENT_STOPPED_NOTICE);
+      }
+    }, AGENT_DETACH_GRACE_MS),
+  );
 
   const reaper = new SessionReaper(bridge.sessions);
   reaper.start();
@@ -523,8 +550,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   syncNudge.run = (): void => cloudSync.nudge();
   // `syncNow`, not `nudge` (a cycle soon): somebody is watching the button. Never awaited.
   bridge.attachSyncRequest(() => void cloudSync.syncNow());
-  if (options.hudSignIn !== undefined)
+  if (options.hudSignIn !== undefined) {
     bridge.attachSigninRequest(options.hudSignIn(repaint, projectLinkOnly(options.hudLink)));
+  }
   // Logout and link run in another process: repaint when their files change, the rest on a timer.
   const accountFiles = watchAccountFiles(repaint, undefined, () => repaint(undefined, true));
   accountFiles.watch(join(homedir(), ReticleDir.ROOT, SESSION_FILE));
@@ -576,22 +604,17 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     artifactRootFor: artifactRootResolver(reticleRoot, { servingDirectory: servingDirectoryOf }),
     now,
     bridgePort: port,
+    nonces: bridge.nonces,
     browserProbe: probeLaunchableChromium,
-    ...agentWiring(port, bridge.sessions, leaseUrl),
+    ...agentWiring(bridge.sessions, leaseUrl),
     // A finished verification should not sit behind a one-minute timer — see ToolDeps.onRunPersisted.
     onRunPersisted: (): void => cloudSync.nudge(),
     syncNow: () => cloudSync.syncNow(),
   };
   const profile = resolveToolSurface(options.toolProfile);
   const effectiveDeps = realInput !== undefined ? { ...deps, realInput } : deps;
-  // Read per attach, not once: a project that gets wired while this daemon is alive should stop
-  // being told to wire itself on the next agent that connects.
-  shared.attachMcp((peerSkew) =>
-    createMcpServer(
-      peerSkew === undefined
-        ? effectiveDeps
-        : { ...effectiveDeps, peerSkew: connectionSkew(peerSkew) },
-      profile,
+  shared.attachMcp(
+    mcpServerFactoryFor(effectiveDeps, profile, () =>
       instructionStateAt(port, bridge.sessions.count()),
     ),
   );
@@ -632,7 +655,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
   // verdict into the same activity log they watch the agent in. The page animates via the normal
   // replay path, so they see it re-drive and the ✓/⚠/✗ land.
   bridge.attachReplay((sessionId, flowName) => {
-    if (bridge.sessions.get(sessionId) === undefined) return;
+    if (bridge.sessions.get(sessionId) === undefined) {
+      return;
+    }
     void replayFromHud(effectiveDeps, (id) => bridge.sessions.get(id), sessionId, flowName);
   });
   // On connect, hand the panel the replayable flows so it can render the ▶ list. Scoped to the
@@ -702,11 +727,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<RunningSe
     // says WHETHER it is idle; this says how long that quiet should be tolerated — see idle-grace.
     agentAttached: () => agentConnected,
     announceShutdown: () => shared.announceShutdown(),
+    onShutdownRequest: (handler) => shared.attachShutdown(handler),
     close: async () => {
       reaper.stop();
       await cleanupCaptureDirectories();
       const vh = verifyHttp;
-      if (vh !== undefined) await new Promise<void>((resolve) => vh.server.close(() => resolve()));
+      if (vh !== undefined) {
+        await new Promise<void>((resolve) => vh.server.close(() => resolve()));
+      }
       leaseReaper.stop();
       chatDrives.stop();
       accountFiles.close();

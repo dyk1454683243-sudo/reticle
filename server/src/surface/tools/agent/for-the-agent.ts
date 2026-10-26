@@ -7,14 +7,15 @@
  * which was already shaped. Everything here runs AFTER the verdict was decided and after telemetry
  * read the full result; none of it can change a verdict.
  */
-import { ReticleTool } from '@reticlehq/core';
+import { existsSync, readFileSync } from 'node:fs';
+import { AgentRules, ReticleTool } from '@reticlehq/core';
 import { addAppNote, readAppNotes } from './app-notes.js';
 import { shapeForAgent, wantsFull } from './compact-envelope.js';
 import { learnFromVerdict } from './app-notes-learning.js';
 import { reteachFor } from './reteach.js';
 import { staleBuildNotice } from './build-staleness.js';
 import { PRIMER_POINTER, type NoticeFold, foldNotices } from './notices.js';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { keychainNoticeOnce, projectReader } from '@/command/cli/doctor/doctor-signing-line.js';
 
 export interface AgentAnswer {
@@ -26,6 +27,47 @@ export interface AgentAnswer {
   /** The project's `.reticle` root, when one resolves. */
   root: string | undefined;
   fold: NoticeFold;
+}
+
+const GIT_DIR = '.git';
+
+/** A file's text, or empty when it cannot be read: a pointer is never worth a failed answer. */
+function textOf(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** Whether `dir`, or a folder above it up to the repository root, has a rules file with the section. */
+function rulesSectionAbove(dir: string): boolean {
+  for (let at = dir; ; at = dirname(at)) {
+    for (const file of AgentRules.FILES) {
+      if (textOf(join(at, file)).includes(AgentRules.BEGIN)) {
+        return true;
+      }
+    }
+    if (existsSync(join(at, GIT_DIR)) || dirname(at) === at) {
+      return false;
+    }
+  }
+}
+
+/** Read once per agent session: the pointer is said once, on the first answer. */
+const sectionByAttach = new Map<string, boolean>();
+
+/**
+ * Only where `init` wrote the section. In an unwired project the pointer named a file that did not
+ * exist, so the agent was sent to read nothing.
+ */
+function primerPointerFor(attach: string, project: string | undefined): string[] {
+  let has = sectionByAttach.get(attach);
+  if (has === undefined) {
+    has = project !== undefined && rulesSectionAbove(project);
+    sectionByAttach.set(attach, has);
+  }
+  return has ? [PRIMER_POINTER] : [];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -49,7 +91,7 @@ export function forTheAgent(answer: AgentAnswer): unknown {
   return foldNotices(shaped, attach, answer.fold, [
     ...(stale === undefined ? [] : [stale]),
     ...(keychain === undefined ? [] : [keychain]),
-    PRIMER_POINTER,
+    ...primerPointerFor(attach, project),
     ...notes,
     ...reteachFor(attach, name, args, shaped),
   ]);

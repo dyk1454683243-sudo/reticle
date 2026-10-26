@@ -1,5 +1,6 @@
-import { z } from 'zod';
-import { EventType, PerfMetric } from './constants/constants.js';
+import * as z from 'zod';
+import { CanvasTrigger, EventType, MediaEvent, PerfMetric } from './constants/constants.js';
+import { ResponseBodyReason } from './constants/response-body-reason.js';
 import { BlindSpotKind } from '@/verdict/verified-constants.js';
 import { BrowserBrand } from '@/telemetry-feedback.js';
 import { HudUseDataSchema, HumanControlDataSchema, HumanMarkDataSchema } from './messages.js';
@@ -120,7 +121,10 @@ export const SeedCookieSchema = z.object({
 });
 export type SeedCookie = z.infer<typeof SeedCookieSchema>;
 
-export const SeedCookiesSchema = z.union([z.record(z.string()), z.array(SeedCookieSchema)]);
+export const SeedCookiesSchema = z.union([
+  z.record(z.string(), z.string()),
+  z.array(SeedCookieSchema),
+]);
 export type SeedCookies = z.infer<typeof SeedCookiesSchema>;
 
 /**
@@ -130,11 +134,11 @@ export type SeedCookies = z.infer<typeof SeedCookiesSchema>;
 export const SeedStorageSchema = z
   .object({
     local: z
-      .record(z.string())
+      .record(z.string(), z.string())
       .optional()
       .describe('Key-value pairs to seed into window.localStorage before first navigation.'),
     session: z
-      .record(z.string())
+      .record(z.string(), z.string())
       .optional()
       .describe('Key-value pairs to seed into window.sessionStorage before first navigation.'),
     cookies: SeedCookiesSchema.optional().describe(
@@ -204,7 +208,17 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   [EventType.DOM_ATTR]: z
     .object({ attr: z.string(), value: z.string().optional(), old: z.string().optional() })
     .passthrough(),
-  [EventType.DOM_TEXT]: z.object({ text: z.string(), old: z.string().optional() }),
+  [EventType.DOM_TEXT]: z.object({
+    text: z.string(),
+    old: z.string().optional(),
+    /**
+     * The `data-testid` of the element or its nearest ancestor, so a text change can be named and a
+     * stale one (a store field changed, the text that shows it did not) can be found.
+     */
+    testid: z.string().optional(),
+    /** The text an element ARRIVED with, not a change: the baseline a later change is read against. */
+    initial: z.boolean().optional(),
+  }),
   [EventType.NET_REQUEST]: netRequestSchema,
   [EventType.NET_PENDING]: z.object({
     id: z.string(),
@@ -229,6 +243,8 @@ export const EVENT_PAYLOAD_SCHEMAS = {
     search: z.string(),
     hash: z.string(),
     [ROUTE_CHANGE_HOW_FIELD]: z.nativeEnum(RouteChangeHow),
+    /** The app's own route pattern for the screen reached (`/personas/:personaId`), when known. */
+    pattern: z.string().optional(),
   }),
   [EventType.CONSOLE_LOG]: consoleSchema,
   [EventType.CONSOLE_WARN]: consoleSchema,
@@ -254,7 +270,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   }),
   [EventType.REVEAL_SHOWN]: elementLabel.passthrough(),
   [EventType.SIGNAL]: z.object({ name: z.string(), data: z.unknown().optional() }),
-  [EventType.STATE_CHANGE]: z.object({ name: z.string(), value: z.unknown() }).passthrough(),
+  [EventType.STATE_CHANGE]: z
+    .object({ name: z.string(), value: z.unknown().optional() })
+    .passthrough(),
   [EventType.STORAGE_CHANGE]: z.object({
     area: z.nativeEnum(StorageArea),
     key: z.string(),
@@ -331,7 +349,7 @@ export const EVENT_PAYLOAD_SCHEMAS = {
     [FieldChangeField.PREVIOUS]: z.string().optional(),
     [FieldChangeField.PREVIOUS_CHECKED]: z.boolean().optional(),
   }),
-  [EventType.FLOW_RECORDED]: z.object({ name: z.string(), flow: z.unknown() }),
+  [EventType.FLOW_RECORDED]: z.object({ name: z.string(), flow: z.unknown().optional() }),
   [EventType.TRANSPORT_OVERFLOW]: z.object({ dropped: z.number() }),
   [EventType.TRUNCATED]: z.object({ channel: z.string(), dropped: z.number() }),
   [EventType.BLIND_SPOT]: z.object({ kind: z.nativeEnum(BlindSpotKind), count: z.number() }),
@@ -347,19 +365,51 @@ export const EVENT_PAYLOAD_SCHEMAS = {
       url: z.string(),
       method: z.string().optional(),
       status: z.number(),
-      headers: z.record(z.string()),
+      headers: z.record(z.string(), z.string()),
       resourceType: z.string().optional(),
+    })
+    .passthrough(),
+  [EventType.NET_RESPONSE_BODY]: z
+    .object({
+      id: z.string(),
+      method: z.string(),
+      url: z.string(),
+      urlRaw: z.string().optional(),
+      responseBody: z.string(),
+      responseBodyTruncated: z.boolean().optional(),
+      responseBodyReason: z.nativeEnum(ResponseBodyReason).optional(),
     })
     .passthrough(),
   [EventType.HUMAN_CONTROL]: HumanControlDataSchema,
   [EventType.HUMAN_MARK]: HumanMarkDataSchema,
   [EventType.HUD_USED]: HudUseDataSchema,
+  [EventType.MEDIA_STATE]: z.object({
+    event: z.nativeEnum(MediaEvent),
+    tag: z.enum(['video', 'audio']),
+    /** Seconds into the media, as the element reports it. */
+    currentTime: z.number(),
+    /** Absent while unknown (NaN) or endless (a live stream). */
+    duration: z.number().optional(),
+    /** HTMLMediaElement.readyState, 0–4. */
+    readyState: z.number().int().min(0).max(4),
+    paused: z.boolean(),
+  }),
+  [EventType.CANVAS_DIGEST]: z.object({
+    /** A hash of a 16x16 sample of the canvas pixels: changes when what it shows changes. */
+    digest: z.string(),
+    width: z.number().int().nonnegative(),
+    height: z.number().int().nonnegative(),
+    /** The sample's mean colour, `[r, g, b]` 0–255: a coarse "what colour is it" a reader can check. */
+    mean: z.tuple([z.number(), z.number(), z.number()]),
+    /**
+     * `act` when an act's end took it, inside the act's window and sent even if nothing changed;
+     * `poll` when the timer did. Absent from an SDK older than the field.
+     */
+    trigger: z.nativeEnum(CanvasTrigger).optional(),
+  }),
 } satisfies Record<EventType, z.ZodTypeAny>;
 
 /** Narrow an event's `data` against its type's payload schema. Unknown in, typed-or-error out. */
-export function parseEventPayload(
-  type: EventType,
-  data: unknown,
-): z.SafeParseReturnType<unknown, unknown> {
+export function parseEventPayload(type: EventType, data: unknown): z.ZodSafeParseResult<unknown> {
   return EVENT_PAYLOAD_SCHEMAS[type].safeParse(data);
 }

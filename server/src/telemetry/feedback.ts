@@ -142,17 +142,44 @@ const REDACTIONS: readonly {
   // Credential assignments: the KEY stays (it is the useful part), the VALUE goes. The auth SCHEME
   // (`Bearer`, `Basic`, `Token`) is consumed as part of the value, not left as the value — matching
   // only `\S+` after the separator ate the word "Bearer" and published the secret right behind it.
+  // A linking verb is skipped too: "my password is hunter2" lost the word "is" and kept hunter2.
   {
     pattern:
-      /\b(authorization|api[-_]?key|secret|token|password|passwd|pwd)\b(?:\s*[:=]\s*|\s+)(?:(?:bearer|basic|token|digest)\s+)?\S+/gi,
+      /\b(authorization|api[-_]?key|secret|token|password|passwd|pwd)\b(?:\s*[:=]\s*|\s+(?:(?:is|was|=|:)\s+)?)(?:(?:bearer|basic|token|digest)\s+)?\S+/gi,
     label: 'credential-assignment',
   },
-  // Vendor key formats that are self-identifying (sk-…, ghp_…, AKIA…, xoxb-…, eyJ… JWTs).
+  // An environment-style assignment: `STRIPE_SECRET_KEY=…`, `AWS_SECRET_ACCESS_KEY=…`, `DB_PASS: …`.
+  // `\b` does not end a word at `_`, so the rule above never saw these. The sensitive word must be
+  // one whole `_` segment of the name, so `PASSPORT_ID` or `TOKENIZER_MODE` stay.
+  {
+    pattern:
+      /\b((?:[A-Za-z0-9]+_)*(?:SECRET|TOKEN|PASS|PASSWORD|PASSWD|PWD|PASSPHRASE|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|AUTH|CREDENTIALS?)(?:_[A-Za-z0-9]+)*)\s*[:=]\s*\S+/gi,
+    label: 'credential-assignment',
+  },
+  // Vendor key formats that are self-identifying (sk-…, sk_live_…, ghp_…, AKIA…, xoxb-…, eyJ… JWTs).
   { pattern: /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g, label: 'vendor-key' },
+  { pattern: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b/g, label: 'vendor-key' },
   { pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, label: 'github-token' },
-  { pattern: /\bAKIA[0-9A-Z]{16}\b/g, label: 'aws-key' },
+  { pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, label: 'github-token' },
+  { pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g, label: 'gitlab-token' },
+  { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g, label: 'google-key' },
+  { pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, label: 'aws-key' },
   { pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, label: 'slack-token' },
   { pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, label: 'jwt' },
+  // A payment card: 13 to 19 digits, spaces or dashes allowed, that pass the Luhn check. An id or a
+  // millisecond timestamp rarely starts with 2 to 6 AND passes Luhn, so those stay.
+  {
+    pattern: /\b[2-6](?:[ -]?\d){12,18}\b/g,
+    label: 'card-number',
+    replace: (digits) => (luhnValid(digits.replace(/\D/g, '')) ? REDACTED : digits),
+  },
+  // A phone number: an international `+` number, or a ten-digit (123) 456-7890 shape.
+  {
+    pattern: /(?<![\w+])\+\d[\d ().-]{6,18}\d(?!\w)/g,
+    label: 'phone',
+    replace: (number) => (8 <= number.replace(/\D/g, '').length ? REDACTED : number),
+  },
+  { pattern: /(?<![\w(])\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}\b/g, label: 'phone' },
   // Home directories carry the account name, and a trace is full of them. The name runs to the next
   // separator, quote or line end, NOT the next space: `C:\Users\Jane Doe\…` stopped at the space and
   // sent the surname. Then the rest of the path goes with it. Over-redacting a sentence that follows
@@ -192,6 +219,20 @@ const REDACTIONS: readonly {
     },
   },
 ];
+
+/** The Luhn checksum every payment card number carries. */
+function luhnValid(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (1 === i % 2) {
+      d *= 2;
+      if (9 < d) d -= 9;
+    }
+    sum += d;
+  }
+  return 0 === sum % 10;
+}
 
 interface Redaction {
   text: string;
@@ -268,7 +309,16 @@ const FIELD_CAPS: Record<string, number> = {
 /** What the author supplies; the environment context is detected, never asked for. */
 type FeedbackInput = Pick<
   Feedback,
-  'source' | 'kind' | 'text' | 'trace' | 'rating' | 'need' | 'impact' | 'currentApproach' | 'model'
+  | 'source'
+  | 'kind'
+  | 'text'
+  | 'trace'
+  | 'rating'
+  | 'need'
+  | 'impact'
+  | 'currentApproach'
+  | 'model'
+  | 'contact'
 >;
 
 interface FeedbackReceipt {
@@ -387,6 +437,8 @@ export async function submitFeedback(
     ),
     text: body.text,
     ...(input.rating !== undefined ? { rating: input.rating } : {}),
+    // Not redacted: the person gave this address so the maintainers can answer. Sent only then.
+    ...(input.contact !== undefined ? { contact: input.contact } : {}),
     ...context,
   });
   if (!parsed.success) {

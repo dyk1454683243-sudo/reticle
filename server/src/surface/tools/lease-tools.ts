@@ -10,14 +10,7 @@
  * Attach-only: the pool drives a browser against an already-running dev server — it never starts one.
  */
 
-import type { RealInputProvider } from '@/portal/input/real-input.js';
-import {
-  fixturePortFor,
-  seedFromStorageState,
-  type StorageFixturePort,
-} from '@/portal/input/storage-fixture.js';
-import { mutationPortFor, type NetworkMutationPort } from '@/portal/input/network-mutation.js';
-import type { Perturbation } from '@reticlehq/core';
+import * as production from '@/portal/production/production-activation.js';
 import { z } from 'zod';
 import {
   leaseNotConnectedHint,
@@ -25,7 +18,12 @@ import {
   leaseStillLoadingHint,
   type LeaseEvidence,
 } from './lease-hint.js';
-import { connectOrInject, probeLeaseAlive, tabHidden } from './lease-readiness.js';
+import {
+  connectOrInject,
+  moveReusedLease,
+  notReadyReason,
+  probeLeaseAlive,
+} from './lease-readiness.js';
 import { probeSdkMarker } from './gaps/sdk-marker-probe.js';
 import { observeWebDocument } from '@/portal/session/dev-server/served-document.js';
 import { diagnoseObservedWebCsp } from '@reticlehq/init';
@@ -60,6 +58,12 @@ import {
   refuseRegrant,
 } from './lease-permissions.js';
 import { LEASE_EMULATE_ARG, leaseEmulationOf } from '@/portal/input/viewport-tools.js';
+export {
+  sessionMutationPort,
+  sessionPerturbationPort,
+  suiteFixturePort,
+  suiteFixtureSeed,
+} from './session-ports.js';
 
 /**
  * Everything the daemon already knows about why a leased tab might not have dialled in.
@@ -87,11 +91,15 @@ async function observedCspBlock(
   port: number,
 ): Promise<{ problem: string; fix: string } | undefined> {
   const document = await observeWebDocument(url);
-  if (document === undefined) return undefined;
+  if (document === undefined) {
+    return undefined;
+  }
   const refusesSocket = diagnoseObservedWebCsp(document, port).some((finding) =>
     `${finding.problem} ${finding.fix}`.includes(CONNECT_SRC),
   );
-  if (!refusesSocket) return undefined;
+  if (!refusesSocket) {
+    return undefined;
+  }
   const allow = `ws://localhost:${String(port)} ws://127.0.0.1:${String(port)}`;
   return {
     problem: `its ${CONNECT_SRC} does not allow ws://localhost:${String(port)}`,
@@ -149,7 +157,9 @@ export function appendReticleParams(
     if (projectId !== undefined && projectId.length > 0) {
       u.searchParams.set(RETICLE_URL_PARAM.PROJECT, projectId);
     }
-    if (hud !== undefined) u.searchParams.set(RETICLE_URL_PARAM.HUD, hud);
+    if (hud !== undefined) {
+      u.searchParams.set(RETICLE_URL_PARAM.HUD, hud);
+    }
     return u.toString();
   } catch {
     const sep = url.includes('?') ? '&' : '?';
@@ -195,7 +205,9 @@ export function resolveLeasedSessionId(
   sessions: { get: (id: string) => unknown; all: () => { id: string; url?: string }[] },
   leaseId: string,
 ): string | undefined {
-  if (sessions.get(leaseId) !== undefined) return leaseId;
+  if (sessions.get(leaseId) !== undefined) {
+    return leaseId;
+  }
   return sessions.all().find((s) => sessionParamOf(s.url) === leaseId)?.id;
 }
 
@@ -214,15 +226,21 @@ export function resolveLeasedSessionId(
  */
 export function carryReticleIdentity(fromUrl: string | undefined, toUrl: string): string {
   const session = sessionParamOf(fromUrl);
-  if (session === undefined) return toUrl;
+  if (session === undefined) {
+    return toUrl;
+  }
   // Already addressed (a caller passing the stamped URL back) — appending would be a no-op at best.
-  if (sessionParamOf(toUrl) !== undefined) return toUrl;
+  if (sessionParamOf(toUrl) !== undefined) {
+    return toUrl;
+  }
   const projectId = projectParamOf(fromUrl);
   return appendReticleParams(toUrl, session, projectId);
 }
 
 function projectParamOf(url: string | undefined): string | undefined {
-  if (url === undefined) return undefined;
+  if (url === undefined) {
+    return undefined;
+  }
   try {
     return new URL(url).searchParams.get(RETICLE_URL_PARAM.PROJECT) ?? undefined;
   } catch {
@@ -231,7 +249,9 @@ function projectParamOf(url: string | undefined): string | undefined {
 }
 
 function sessionParamOf(url: string | undefined): string | undefined {
-  if (url === undefined) return undefined;
+  if (url === undefined) {
+    return undefined;
+  }
   try {
     return new URL(url).searchParams.get(RETICLE_URL_PARAM.SESSION) ?? undefined;
   } catch {
@@ -289,7 +309,9 @@ export async function acquireLeasedSession(
     registeredId = resolveLeasedSessionId(sessions, lease.sessionId);
     return registeredId !== undefined;
   });
-  if (registeredId !== undefined) pool.alias?.(registeredId, lease.sessionId);
+  if (registeredId !== undefined) {
+    pool.alias?.(registeredId, lease.sessionId);
+  }
   const effectiveId = registeredId ?? lease.sessionId;
   if (seedStorage !== undefined) {
     const session = sessions.get(effectiveId) as
@@ -337,7 +359,10 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
   inputSchema: {
     url: z
       .string()
-      .describe('URL of the already-running app to drive (e.g. http://localhost:3000/dashboard).'),
+      .optional()
+      .describe(
+        'URL of the already-running app to drive (e.g. http://localhost:3000/dashboard). Omit it to lease the one dev server that runs in this project folder.',
+      ),
     projectId: z
       .string()
       .optional()
@@ -367,11 +392,12 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       .describe('How the HUD starts on the page: shown (default), hidden, or removed.'),
     permissions: LEASE_PERMISSIONS_ARG,
     emulate: LEASE_EMULATE_ARG,
+    production: production.PRODUCTION_LEASE_ARG,
     root: z
       .string()
       .optional()
       .describe(
-        "Absolute path of the .reticle folder this lease's runs belong in — the caller's project. Without it, the page's project id decides, and a page with none lands in ~/.reticle/unmatched, which nothing syncs.",
+        "Absolute path of the .reticle folder this lease's runs belong in — the caller's project. The project folder itself is accepted when it contains a .reticle. Without it, the page's project id decides, and a page with none lands in ~/.reticle/unmatched, which nothing syncs.",
       ),
   },
   outputSchema: {
@@ -425,7 +451,14 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       .describe(
         'True when this acquire returned an existing live lease on the same origin rather than minting a second context.',
       ),
+    navigated: z
+      .boolean()
+      .optional()
+      .describe(
+        'Present when a reused lease was on another page. True: its tab was moved to url. False: it could not be moved, and url is the page it is on.',
+      ),
     hint: z.string().optional(),
+    production: production.PRODUCTION_LEASE_OUTPUT,
     versionSkew: z
       .string()
       .optional()
@@ -437,10 +470,16 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
   },
   handler: async (deps: ToolDeps, args) => {
     const pool = deps.pool;
-    if (pool === undefined) throw new Error(POOL_UNAVAILABLE);
-    const url = asString(args['url']);
-    if (url === undefined || 0 === url.length)
-      throw new Error('reticle_lease{action:"acquire"} requires a url');
+    if (pool === undefined) {
+      throw new Error(POOL_UNAVAILABLE);
+    }
+    const given = asString(args['url']);
+    const url = given === undefined || 0 === given.length ? await deps.projectAppUrl?.() : given;
+    if (url === undefined) {
+      throw new Error(
+        'reticle_lease{action:"acquire"} requires a url: no single dev server runs in this project folder. Start the app, or pass the url it serves.',
+      );
+    }
     // Preflight the browser before spending the round trip. Without it a missing Playwright Chromium
     // only surfaces inside pool.acquire, where the launch failure is caught and reported as
     // "could not open <url> — is the app running?" — sending the caller to debug an app that is
@@ -448,13 +487,18 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
     // installed" so error-recovery routes it to the NO_POOL fix (install + drive a human tab).
     if (deps.browserProbe !== undefined) {
       const refusal = chromiumPreflightRefusal(await deps.browserProbe());
-      if (refusal !== undefined) throw new Error(refusal);
+      if (refusal !== undefined) {
+        throw new Error(refusal);
+      }
     }
     const projectId = asString(args['projectId']);
     const root = asString(args['root']);
     const headed = true === args['headed'];
     const hud = Object.values(HudVisibility).find((v) => v === args['hud']);
-    const permissions = parseLeasePermissions(args['permissions']);
+    const permissions = production.leasePermissions(
+      parseLeasePermissions(args['permissions']),
+      args['production'],
+    );
     const emulate = leaseEmulationOf(args['emulate']);
     // The stub of the shell bindings, when the caller supplied one. Installed by the pool before
     // the first navigation, so it is already defined when the app's first module runs.
@@ -477,6 +521,11 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       }
       validatedSeed = parsed.data;
     }
+    // Awaited only when asked: an extra tick here reorders concurrent acquires on the origin lock.
+    const activated =
+      args['production'] === undefined
+        ? undefined
+        : await production.activationFor(deps, args['production'], url, root);
     // Sampled BEFORE acquiring: afterwards this lease is itself a session, and the point is to name
     // a tab that already existed. A human's open tab is the one they can watch, so if one is here
     // the agent should be told at the moment it is choosing — not after it has gone dark on them.
@@ -525,7 +574,10 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
         pool.ignoresHTTPSErrors(existing) !== certAsked;
       // Emulation is set before the first paint, so a held lease is replaced like a seeded one.
       if (
-        (validatedSeed !== undefined || certMismatch || emulate !== undefined) &&
+        (validatedSeed !== undefined ||
+          certMismatch ||
+          emulate !== undefined ||
+          activated !== undefined) &&
         existing !== undefined
       ) {
         // Seeding or a different certificate setting asked for: release its own context so the new
@@ -552,16 +604,22 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
           // old, or there may be none at all — `unresponsive` is set by past commands failing, and
           // its own contract says absence means "answering, OR NOT ASKED YET". So the happy path of
           // a first acquire pays nothing for this.
+          const tabUrl = (): string | undefined => deps.sessions.get(resolved)?.url;
+          const moved = await moveReusedLease(
+            tabUrl,
+            url,
+            () => pool.gotoLease(existing, carryReticleIdentity(tabUrl(), url)),
+            deps.now,
+          );
           const reusedSession = deps.sessions.get(resolved);
-          const alive = await probeLeaseAlive(reusedSession);
-          const reuseReason = !alive
-            ? LeaseNotReadyReason.SDK_STOPPED_ANSWERING
-            : tabHidden(reusedSession)
-              ? LeaseNotReadyReason.TAB_HIDDEN
-              : undefined;
+          const reuseReason =
+            false === moved?.arrived
+              ? LeaseNotReadyReason.SDK_NEVER_DIALLED
+              : notReadyReason(await probeLeaseAlive(reusedSession), reusedSession);
           return {
             sessionId: resolved,
-            url,
+            url: moved?.url ?? url,
+            ...(moved === undefined ? {} : { navigated: moved.navigated }),
             ready: reuseReason === undefined,
             ...(reuseReason === undefined ? {} : { notReadyReason: reuseReason }),
             reused: true,
@@ -584,8 +642,10 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       }
       const sessionId = newLeaseId();
       // Before the page can dial in: the session is stamped with its root the moment it registers.
-      if (root !== undefined) claimArtifactRoot(sessionId, root);
-      const navUrl = appendReticleParams(url, sessionId, projectId, hud);
+      if (root !== undefined) {
+        claimArtifactRoot(sessionId, root);
+      }
+      const navUrl = appendReticleParams(activated?.url ?? url, sessionId, projectId, hud);
       let lease;
       try {
         lease = await pool.acquire(navUrl, {
@@ -602,9 +662,13 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
           ...(emulate === undefined ? {} : { emulate }),
         });
       } catch (err) {
-        if (err instanceof PoolAtCapacityError) throw err;
+        if (err instanceof PoolAtCapacityError) {
+          throw err;
+        }
         const refusal = permissionRefusal(err);
-        if (refusal !== undefined) throw refusal;
+        if (refusal !== undefined) {
+          throw refusal;
+        }
         if (err instanceof Error && err.message.startsWith('Storage seeding failed')) {
           throw new Error(scrubSeedFromError(err.message, validatedSeed));
         }
@@ -617,8 +681,9 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       // and the id we hand back has to be the one the agent can actually drive.
       let registeredId: string | undefined;
       const waitStartedAt = Date.now();
+      const waited = await production.guardedForProduction(pool, lease, activated);
       const { ready, zeroInstall, stillLoading, readerFailure } = await connectOrInject(
-        lease,
+        waited,
         () => {
           registeredId = resolveLeasedSessionId(deps.sessions, lease.sessionId);
           return registeredId !== undefined;
@@ -628,7 +693,9 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       // under the id we are about to hand back, and the pool is keyed by the id it navigated with;
       // without this the touches miss, the lease ages out despite continuous activity, and the
       // reaper closes the context mid-flow. See BrowserPool.alias and #157.
-      if (registeredId !== undefined) pool.alias(registeredId, lease.sessionId);
+      if (registeredId !== undefined) {
+        pool.alias(registeredId, lease.sessionId);
+      }
       const effectiveSessionId = registeredId ?? lease.sessionId;
       const session = deps.sessions.get(effectiveSessionId);
       if (validatedSeed !== undefined && session !== undefined) {
@@ -644,18 +711,28 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
       }
       // The lease now exists, so any HUD a human is watching has just gone dark. Say so. A lease whose
       // reader failed is already released, so there is nothing to say.
-      if (readerFailure === undefined) tellWatchers(deps, projectId, AGENT_DRIVING_ELSEWHERE);
+      if (readerFailure === undefined) {
+        tellWatchers(deps, projectId, AGENT_DRIVING_ELSEWHERE);
+      }
       // ready means the SDK dialled in — not that contracts match. Carry the skew warning on acquire
       // so the agent does not learn it only after a CDP tool invents a closed page (#688).
       const mintReason =
         readerFailure?.reason ??
-        (!ready
-          ? LeaseNotReadyReason.SDK_NEVER_DIALLED
-          : tabHidden(session)
-            ? LeaseNotReadyReason.TAB_HIDDEN
-            : undefined);
+        notReadyReason(ready, session, LeaseNotReadyReason.SDK_NEVER_DIALLED);
       const versionSkew =
         registeredId === undefined ? undefined : deps.sessions.get(registeredId)?.versionSkew;
+      let notReadyHint: string | undefined;
+      if (!ready) {
+        if (readerFailure !== undefined) {
+          notReadyHint = leaseReaderFailedHint(url, readerFailure);
+        } else if (true === stillLoading) {
+          notReadyHint = leaseStillLoadingHint(url, Date.now() - waitStartedAt);
+        } else if (activated !== undefined) {
+          notReadyHint = production.notActivatedHint(url);
+        } else {
+          notReadyHint = await notConnectedHint(deps, url, pool.dialFailureUrl?.(lease.sessionId));
+        }
+      }
       return {
         sessionId: registeredId ?? lease.sessionId,
         url,
@@ -678,15 +755,10 @@ export const LEASE_ACQUIRE_TOOL: ToolDef = {
               },
             }),
         ...(versionSkew === undefined ? {} : { versionSkew }),
+        ...production.summary(activated),
         ...(initScript === undefined ? {} : { hostStub: HOST_STUB_NOTE }),
         ...hintOf(
-          ready
-            ? undefined
-            : readerFailure !== undefined
-              ? leaseReaderFailedHint(url, readerFailure)
-              : true === stillLoading
-                ? leaseStillLoadingHint(url, Date.now() - waitStartedAt)
-                : await notConnectedHint(deps, url, pool.dialFailureUrl?.(lease.sessionId)),
+          notReadyHint,
           ready ? await notificationReadBack(pool, lease.sessionId, permissions) : undefined,
         ),
       };
@@ -728,7 +800,9 @@ const LEASE_RELEASE_TOOL: ToolDef = {
   },
   handler: async (deps: ToolDeps, args) => {
     const pool = deps.pool;
-    if (pool === undefined) throw new Error(POOL_UNAVAILABLE);
+    if (pool === undefined) {
+      throw new Error(POOL_UNAVAILABLE);
+    }
     const sessionId = asString(args['sessionId']);
     if (sessionId === undefined || 0 === sessionId.length) {
       throw new Error('reticle_lease{action:"release"} requires a sessionId');
@@ -764,7 +838,9 @@ export async function releaseLease(
   dropArtifactRootClaim(sessionId);
   // Only once the LAST lease is gone. Announcing "live again" while another lease still drives
   // would be a lie, and a HUD that says the wrong thing is worse than one that says nothing.
-  if (0 === pool.activeCount()) tellWatchers(deps, projectId, AGENT_DRIVING_HERE_AGAIN);
+  if (0 === pool.activeCount()) {
+    tellWatchers(deps, projectId, AGENT_DRIVING_HERE_AGAIN);
+  }
   return pool.activeCount();
 }
 
@@ -799,9 +875,13 @@ function liveTabFor(
   url: string,
 ): string | undefined {
   const pool = deps.pool;
-  if (pool === undefined) return undefined;
+  if (pool === undefined) {
+    return undefined;
+  }
   const wanted = originOf(url);
-  if (wanted === undefined) return undefined;
+  if (wanted === undefined) {
+    return undefined;
+  }
   try {
     const candidates = deps.sessions
       .all()
@@ -825,7 +905,9 @@ function liveTabFor(
  */
 function tellWatchers(deps: ToolDeps, projectId: string | undefined, text: string): void {
   const pool = deps.pool;
-  if (pool === undefined) return;
+  if (pool === undefined) {
+    return;
+  }
   try {
     const candidates = deps.sessions
       .all()
@@ -839,104 +921,3 @@ function tellWatchers(deps: ToolDeps, projectId: string | undefined, text: strin
 }
 
 export const LEASE_TOOLS: ToolDef[] = [LEASE_ACQUIRE_TOOL, LEASE_RELEASE_TOOL];
-
-/**
- * The state a suite should boot its flows from: whatever the agent is already sitting in.
- *
- * This is the join the fixture work was building toward. A suite's flows each start from cold, so
- * fifty of them prove the login works fifty times — and the flow that LOGS OUT leaves every flow
- * after it signed out, which no navigation repairs, because the problem is not where the subject is
- * but what it holds. A seed is applied to an isolated context BEFORE the first navigation, which is
- * exactly and only when a fixture can work.
- *
- * Best-effort, deliberately. A fixture is an OPTIMISATION over running from cold, and running from
- * cold is correct: a suite that refused to start because a cookie jar could not be read would have
- * traded a slow answer for no answer. Every "no" here — no provider, no storage support, nothing
- * driven, a browser that threw, nothing worth seeding — produces the same honest `undefined`, and
- * the suite runs exactly as it did before any of this existed.
- */
-export async function suiteFixtureSeed(
-  realInput: RealInputProvider | undefined,
-  appUrl: string,
-): Promise<SeedStorage | undefined> {
-  if (realInput === undefined) return undefined;
-  try {
-    const port = await fixturePortFor(realInput, appUrl);
-    if (port === undefined) return undefined;
-    return seedFromStorageState(await port.capture(), appUrl);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * A way to make this session's page SLOW on purpose, or nothing.
- *
- * The third of these seams, for the same reason as the other two: a feature reaching into the input
- * layer directly is a feature depending on a driver, and the boundary guard asks about it.
- *
- * Installs delays and NOTHING else. A rule that carried a status or a body would substitute a
- * response the server never sent, and an app raced against invented data produces invented races —
- * a fabricated defect handed to somebody at 3am, which is worse than finding nothing.
- */
-export async function sessionPerturbationPort(
-  realInput: RealInputProvider | undefined,
-  appUrl: string | undefined,
-): Promise<
-  { slow(rules: readonly Perturbation[]): Promise<void>; clear(): Promise<void> } | undefined
-> {
-  if (realInput === undefined || appUrl === undefined) return undefined;
-  const setMocks = realInput.setMocks?.bind(realInput);
-  if (setMocks === undefined) return undefined;
-  if (!(await realInput.isAvailableFor(appUrl))) return undefined;
-  return {
-    slow: async (rules) => {
-      await setMocks(appUrl, [...rules]);
-    },
-    /** Clearing is the undo. A page left slowed is damage the next run inherits. */
-    clear: async () => {
-      await setMocks(appUrl, []);
-    },
-  };
-}
-
-/**
- * Save/restore for this session's page, or nothing.
- *
- * The same job as `suiteFixtureSeed` next door, stopping one step earlier: that one captures and
- * converts, this hands back the PORT so a caller can re-apply what it captured later. It lives here
- * for the reason written above — a feature reaching into the input layer directly is a feature
- * depending on a driver, and the boundary guard asks about it. It asked.
- */
-export async function suiteFixturePort(
-  realInput: RealInputProvider | undefined,
-  appUrl: string | undefined,
-): Promise<StorageFixturePort | undefined> {
-  if (realInput === undefined || appUrl === undefined) return undefined;
-  try {
-    return await fixturePortFor(realInput, appUrl);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * A way to break this session's page, or nothing.
- *
- * Sits beside `suiteFixtureSeed` because it is the same shape of job: turning a provider capability
- * into something a feature can use, on the one side of the graph that is allowed to know about both.
- * A flow tool reaching into the input layer directly would be a feature depending on a driver, which
- * is the reach the boundary guard exists to ask about.
- */
-export async function sessionMutationPort(
-  realInput: RealInputProvider | undefined,
-  appUrl: string | undefined,
-): Promise<NetworkMutationPort | undefined> {
-  if (realInput === undefined || appUrl === undefined) return undefined;
-  try {
-    return await mutationPortFor(realInput, appUrl);
-  } catch {
-    // A provider that cannot answer is the same answer as a provider that cannot break anything.
-    return undefined;
-  }
-}

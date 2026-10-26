@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { ActionType, QueryBy } from '@reticlehq/core';
 import { executeAction } from '@/actions/actions.js';
 import { refs } from './addressing/refs.js';
-import { isVisible } from './a11y.js';
+import { isVisible } from './visibility.js';
 import { runQuery } from './query.js';
 
 const APPLE = 'Apple';
@@ -30,14 +30,15 @@ function box(el: Element, width: number, height: number): void {
 
 function requireElement(id: string): HTMLElement {
   const el = document.getElementById(id);
-  if (null === el) throw new Error(`fixture missing #${id}`);
+  if (null === el) {
+    throw new Error(`fixture missing #${id}`);
+  }
   return el;
 }
 
 /**
  * The Radix bubble: a 1×1 clipped `<select>` plus a portal `role=option` that is what a user
- * clicks. The select stays `visible` to the visibility walk — the bug is that the walk cannot
- * tell this duplicate from a control.
+ * clicks. A select the user can see gets the same duplicate without the clip.
  */
 function mountDuplicate(selectWidth: number, selectHeight: number): HTMLSelectElement {
   document.body.innerHTML = '';
@@ -46,8 +47,10 @@ function mountDuplicate(selectWidth: number, selectHeight: number): HTMLSelectEl
   select.style.position = 'absolute';
   select.style.width = `${String(selectWidth)}px`;
   select.style.height = `${String(selectHeight)}px`;
-  select.style.overflow = 'hidden';
-  select.style.clip = 'rect(0, 0, 0, 0)';
+  if (selectWidth <= VISUALLY_HIDDEN_PX && selectHeight <= VISUALLY_HIDDEN_PX) {
+    select.style.overflow = 'hidden';
+    select.style.clip = 'rect(0, 0, 0, 0)';
+  }
   const pear = document.createElement('option');
   pear.value = 'pear';
   pear.textContent = 'Pear';
@@ -78,7 +81,9 @@ function appleQuery(): ReturnType<typeof runQuery> {
 
 function nativeApple(select: HTMLSelectElement): HTMLOptionElement {
   const option = [...select.options].find((item) => item.value === APPLE_VALUE);
-  if (option === undefined) throw new Error('fixture missing native option');
+  if (option === undefined) {
+    throw new Error('fixture missing native option');
+  }
   return option;
 }
 
@@ -91,9 +96,9 @@ describe('a role query for an option prefers the visible actionable one', () => 
     const select = mountDuplicate(VISUALLY_HIDDEN_PX, VISUALLY_HIDDEN_PX);
     const portal = requireElement(PORTAL_ID);
     const native = nativeApple(select);
-    // Both nodes are visible to the walk. Hiding is the 1×1 clip, not display/aria-hidden.
-    expect(isVisible(select)).toBe(true);
-    expect(isVisible(native)).toBe(true);
+    // The sr-only clip hides the bubble from the visibility walk; only the portal is on screen.
+    expect(isVisible(select)).toBe(false);
+    expect(isVisible(native)).toBe(false);
     expect(isVisible(portal)).toBe(true);
 
     const found = appleQuery();
@@ -101,7 +106,9 @@ describe('a role query for an option prefers the visible actionable one', () => 
     expect(found.elements[0]?.ref).toBe(refs.refFor(portal));
 
     const ref = found.elements[0]?.ref;
-    if (ref === undefined) throw new Error('resolved option has no ref');
+    if (ref === undefined) {
+      throw new Error('resolved option has no ref');
+    }
     await executeAction(ref, ActionType.CLICK);
     expect(select.value).toBe(APPLE_VALUE);
   });
@@ -113,7 +120,9 @@ describe('a role query for an option prefers the visible actionable one', () => 
     expect(found.count).toBe(1);
     expect(found.elements[0]?.ref).toBe(refs.refFor(requireElement(PORTAL_ID)));
     const ref = found.elements[0]?.ref;
-    if (ref === undefined) throw new Error('resolved option has no ref');
+    if (ref === undefined) {
+      throw new Error('resolved option has no ref');
+    }
     await executeAction(ref, ActionType.CLICK);
     expect(select.value).toBe(APPLE_VALUE);
   });

@@ -9,6 +9,13 @@ import { projectBody } from './network-body.js';
 afterEach(resetActiveRedactionPolicy);
 
 describe('captured body redaction before retention', () => {
+  it('redacts quoted JSON credentials in a text body without leaving value fragments', () => {
+    const body = 'data: {"password":"private \\"quoted\\" value","answer":"hello"}\n\n';
+    expect(projectBody(body, 'text/event-stream').body).toBe(
+      'data: {"password":"[REDACTED]","answer":"hello"}\n\n',
+    );
+  });
+
   it('masks built-in keys and needs app-specific keys for an unfamiliar credential name', () => {
     const body = JSON.stringify({
       apiKey: 'test-api-value-123',

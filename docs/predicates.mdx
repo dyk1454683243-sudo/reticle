@@ -71,7 +71,13 @@ Add `"absent": true` to assert something is **gone**. The predicate for a remova
 { "kind": "text", "contains": "Saved successfully", "visible": true }
 ```
 
-`contains` is the field the published schema declares. `value`, `text` and `query` are accepted as aliases and rewritten to it. The match is case-sensitive; `ignoreCase: true` relaxes that. `absent: true` asserts the text is not present, and `visible: true` requires it to be on screen rather than merely in the DOM.
+`contains` is the field the published schema declares. `value`, `text` and `query` are accepted as aliases and rewritten to it. The match is case-sensitive. `ignoreCase: true` relaxes that. Curly quotes (`‘ ’ “ ”`), the en dash and the em dash match their plain forms. So `It's saved - done` matches a page that shows `It’s saved – done`. Text that Reticle reports back keeps the page's own characters. `absent: true` asserts the text is not present, and `visible: true` requires it to be on screen rather than merely in the DOM.
+
+`text` reads the text that the page renders. It does not read what is typed into an `<input>` or a `<textarea>`, because that is the field's value, not text on the page. `value` on a `text` predicate is only an alias for `contains`, so it also reads rendered text. To assert what a field holds, use an `element` predicate with `value`:
+
+```json
+{ "kind": "element", "query": { "role": "textbox", "name": "Notes", "value": "Ship on Friday" } }
+```
 
 Use `scope` to restrict the search to a CSS selector or element ref. If Reticle reports that the text is split across the scope's children, retry its generated predicate with `"self": true`; that checks the scope root's combined subtree text while still enforcing `contains`.
 
@@ -178,7 +184,7 @@ A passing route verdict quotes the transition itself:
 { "kind": "signal", "name": "webhook:received", "dataMatches": { "provider": "stripe", "id": "*" } }
 ```
 
-The app emitted a named signal via `reticle.signal()`. `dataMatches` matches field by field, a key can be a dotted path (`"order.total"`), and `*` means "present, any value".
+The app emitted a named signal via `reticle.signal()`. `dataMatches` matches field by field, a key can be a dotted path (`"order.total"`), and `*` means "present, any value". Without `name`, the check matches any signal from the app. It ignores Reticle's own signals, such as `reticle:busy`. To match one of those, name it.
 
 `count` works here exactly as it does on `net`:
 
@@ -186,7 +192,7 @@ The app emitted a named signal via `reticle.signal()`. `dataMatches` matches fie
 { "kind": "signal", "name": "order:placed", "count": 1 }
 ```
 
-**Exactly once.** A handler wired twice fires the signal twice and leaves the store in the right shape either way, so every state-only check stays green. `count: 0` is a claim of its own (the signal never fired) and is not the same as leaving `count` out, which asserts presence.
+**Exactly once.** A handler wired twice fires the signal twice and leaves the store in the right shape either way, so every state-only check stays green. `count` is exact on `signal` and on `net`. Leave it out to ask for at least one. `count: 0` means never, and Reticle holds it like every other absence: for at least one second, and until the page goes quiet. A signal or a request that comes late still fails it.
 
 Nothing outranks this. A `200` proves the server was reachable; a rendered row proves React ran. A signal is the application itself saying the thing succeeded. See [instrumentation](/instrumentation) for how to emit them.
 
@@ -219,7 +225,7 @@ Omit `equals` entirely to assert presence. A real `$length` check against this f
 }
 ```
 
-Note `grade: state` in the `because` line, and that the evidence collapses each row to a size marker rather than returning forty objects.
+The `because` line names the grade ("at state grade"). The evidence shows each row as a size marker, not as forty objects.
 
 #### satisfies: asserting a property instead of exact bytes
 
@@ -318,7 +324,12 @@ This is the predicate that catches a UI-versus-store desync. A deploy that only 
 { "kind": "settled", "quietMs": 500 }
 ```
 
-Network and DOM idle. This is the deterministic replacement for a fixed sleep, not a proof of anything: combine it with a real consequence rather than asserting it alone. Omitting `until` on [`reticle_act_and_wait`](/tools/act-and-wait) waits for exactly this.
+The page is quiet: no request in flight, no response body still streaming, no work that the app declared with `reticle.busy()` still pending, and no network or DOM activity for `quietMs` (default 500). This is the deterministic replacement for a fixed sleep, not a proof of anything. Combine it with a real consequence. Do not assert it alone. If you omit `until` on [`reticle_act_and_wait`](/tools/act-and-wait), it waits for exactly this.
+
+`channel` changes what counts as activity:
+
+- `"network"`: requests only. No request in flight, and no request completed in the last `quietMs`. DOM changes, such as a running animation, do not hold it open. A saved `net` check with a `count` uses this, so a late duplicate request is still counted.
+- `"app"`: the default activity plus every framework render commit. Use it for an app whose renders are its work. The default ignores render commits, because on many pages a clock or a counter renders every second, and the page would never go quiet.
 
 ### compare
 
@@ -380,7 +391,7 @@ A fault-injection test (mock a 500, check the error UI) is asserting that a requ
 
 Asserting only the error text is not enough, and this is the most common way to get a confusing `verified: "no"`. Reticle watches for "the UI moved forward while a request failed", a swallowed rejection, and one of the most expensive bugs it catches. A fault-injection test looks **exactly** like that bug from the outside: a request failed, the screen changed, nothing said that was the plan.
 
-Naming the failing call is what tells the two apart. A `net` clause with `status` of 400 or more, or `"ok": false`, which is the honest field for IPC, where there is no status code, marks that call as expected to fail, and a failure there stops being a disagreement.
+Naming the failing call is what tells the two apart. A `net` clause with `status` of 400 or more, or `"ok": false` (the field for IPC, which has no status code), marks that call as expected to fail. A failure there is then not a disagreement. The same rule applies to the `expect` of each step in `reticle_act { steps }` and in a replayed flow: each step declares its own expected failures. A failure that no step declared is still reported.
 
 <Warning>
   Declare it in the top level or inside `allOf`. A declaration inside `anyOf` is deliberately
@@ -452,7 +463,7 @@ On a failure each child reports separately too, so you can see which one broke:
 | `timeout_ms` | `reticle_assert` (both actions), `reticle_act_and_wait` | Wait up to N ms for it to become true |
 | `since` | `net`, `route`, `console`, `animation` and `signal` leaves, and the call itself | Only consider events after this cursor |
 
-The `since` cursor comes from a prior `reticle_act` or `reticle_observe` response. Use it whenever you are asserting something an action was supposed to cause. Without it, an assertion can pass on an event from two clicks ago. That applies to every one of the five kinds above, not only to network calls: an unscoped `signal` matches a fire from an earlier action just as readily.
+The `since` cursor comes from a prior `reticle_act` or `reticle_observe` response. When you leave it out, the window starts at your last act, so a signal from an earlier action cannot pass the check. Give `since` when the cause is not your last act, for example when you assert on a cursor that you took before two actions. Before your first act there is no last act, and the window is the whole buffer.
 
 <Card title="Where predicates get used" icon="circle-check" href="/tools/act-and-wait">
   Naming the consequence before the action is the whole point.

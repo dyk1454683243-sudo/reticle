@@ -62,6 +62,7 @@ describe('the journal does not record Reticle watching itself load', () => {
     rec.observe(net(EventType.NET_PENDING, url, 0));
     rec.observe(net(EventType.NET_DETAIL, url, 1));
     rec.observe(net(EventType.NET_REQUEST, url, 2));
+    rec.observe(net(EventType.NET_RESPONSE_BODY, url, 3));
     await rec.flush();
     expect(sink.events).toEqual([]);
   });

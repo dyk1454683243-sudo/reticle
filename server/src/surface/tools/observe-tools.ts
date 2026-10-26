@@ -54,6 +54,7 @@ import {
   withSizeCost,
   DEFAULT_OBSERVE_EVENT_LIMIT,
   DEFAULT_QUERY_LIMIT,
+  withoutConstantSessionId,
 } from '@/portal/session/output-budget.js';
 import {
   annotateStarvedFailure,
@@ -69,7 +70,8 @@ import {
 } from './assert/assert-grade.js';
 import { assertVerdict } from './assert/assert-verdict.js';
 import { followLostObservation } from './act/act-observation.js';
-import { withGapNovelty } from './gap-novelty.js';
+import { engineBlindSpotsOutput, withGapNovelty } from './gap-novelty.js';
+import { engineBlindSpotsField } from '@/portal/session/recorded-gaps.js';
 import { assertionSource } from './assert/assert-source.js';
 import { isChangeUndeclared } from '@reticlehq/engine/evidence/undeclared-change.js';
 import { openSessionIntents } from '@/memory/intent/open-intents.js';
@@ -103,21 +105,6 @@ const bufferOutputShape = {
       'Present only when the event buffer evicted events — a negative result may then be a false negative.',
     ),
 };
-
-/**
- * Drop `sessionId` from an event in a response the caller scoped to ONE session.
- *
- * The caller passed that id in the request, so echoing it on every event is the request quoted back
- * once per row. Measured on a live app it was 25% of a four-event `reticle_observe` payload, and it
- * grows linearly with the timeline — a fifty-event window spends ~2.5KB restating a fact the caller
- * supplied. The id stays on the wire between SDK and bridge, where events from different sessions
- * really do interleave; it is only redundant at this boundary.
- */
-function withoutConstantSessionId(event: unknown): unknown {
-  if (typeof event !== 'object' || null === event) return event;
-  const { sessionId: _sessionId, ...rest } = event as Record<string, unknown>;
-  return rest;
-}
 
 /**
  * The console levels, derived from core's console EventTypes — see CONSOLE_LEVELS.
@@ -286,11 +273,12 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       timeout_ms: waitForTimeoutMsSchema
         .optional()
         .describe(
-          `Maximum wait in milliseconds. Default: 4000, up to 600000. One call waits at most ${String(MAX_BLOCKING_WAIT_MS)} ms, because your MCP client aborts a longer request; past that it returns resume_ms, and you call again with timeout_ms: resume_ms and the same since to keep waiting.`,
+          `Maximum wait in milliseconds. Default: 4000, up to 600000. One call waits at most ${String(MAX_BLOCKING_WAIT_MS)} ms, because your MCP client aborts a longer request; past that it returns resume_ms, and you call again with timeout_ms: resume_ms, the same predicate, the same since, and the same intent to keep waiting.`,
         ),
       since: cursorSchema
         .optional()
         .describe('Cursor from a prior reticle_act — scopes the wait to events after that act.'),
+      intent: intentArg,
       ...sessionIdShape,
     },
     outputSchema: {
@@ -298,7 +286,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .number()
         .optional()
         .describe(
-          'Present when this call stopped at the per-call limit before the predicate was seen. Call again with timeout_ms set to this, the same predicate and the same since, to keep waiting.',
+          'Present when this call stopped at the per-call limit before the predicate was seen. Call again with timeout_ms set to this, the same predicate, the same since, and the same intent to keep waiting.',
         ),
       verified: z
         .string()
@@ -374,9 +362,17 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       // Refused up front rather than waited out: a body clause this session cannot answer would
       // burn the whole timeout to report something knowable now. See #801(C).
       const bodyRefusal = bodyClauseRefusal(predicate, session);
-      if (bodyRefusal !== undefined) throw new Error(bodyRefusal);
+      if (bodyRefusal !== undefined) {
+        throw new Error(bodyRefusal);
+      }
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       const since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
+      const intentId = await linkInlineIntent(
+        deps,
+        asString(args['sessionId']),
+        asString(args['intent']),
+        PredicateKind.SETTLED === predicate.kind ? undefined : predicate,
+      );
       // See the note on the assert handler below: a wait cut off by a full-document navigation is
       // followed to the document that took over, rather than graded as a lost observation there.
       const predicateStarted = session.elapsed();
@@ -404,8 +400,8 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       }
       // The verdict, graded as `reticle_assert` grades it. This is `reticle_assert { action: "wait" }`,
       // and it answered `pass` with no `verified` — the one field an agent is told to gate on — while
-      // `action: "now"` carried it. Not journaled: a wait settles the page; the proof is the assert.
-      const { decision } = await assertVerdict(
+      // `action: "now"` carried it.
+      const { decision, verdictEffect } = await assertVerdict(
         session,
         predicate,
         verdict.pass,
@@ -414,6 +410,26 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         verdict.inconclusive,
         verdict.observationLost,
       );
+      if (intentId !== undefined && Verified.YES === decision['verified']) {
+        await dischargeInlineIntent(
+          deps,
+          asString(args['sessionId']),
+          intentId,
+          {
+            verdictId: inlineVerdictId(ReticleTool.WAIT_FOR, deps.now()),
+            grade: gradeOfPredicate(predicate),
+            at: deps.now(),
+            runId: runIdOfCall(session.id),
+          },
+          session.lastAct.source(),
+        );
+      }
+      // A graded wait is proof, but it observes rather than drives, so it has no attribution window.
+      session.recordAction(ReticleTool.WAIT_FOR, asRecord(args), {
+        ...verdictEffect,
+        ...checkWords(verdict),
+        ...checkIntent(predicate, verdict, asString(args['intent'])),
+      });
       // match reticle_assert — wrap with control + session health (throttle matters most while blocking)
       // and the buffer envelope, so a verdict reached over an evicted window says so.
       return withControl(session, {
@@ -448,7 +464,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
           '{ state, path|equals } { route, pathname (exact) | contains (path+query+hash) } ' +
           '{ element, testid|role|text } { text } { console, level|contains|absent } { animation, name } ' +
           '{ settled } { compare, left, right } — combine with { allOf | anyOf | not }. Prefer a signal/net/state consequence ' +
-          'over element/text presence.',
+          'over element/text presence. For net and signal, count is exact; omit it for at least one; 0 means never.',
       ),
       until: PredicateSchema.optional().describe("Alias for `predicate` (act_and_wait's name)."),
       timeout_ms: timeoutMsSchema
@@ -538,6 +554,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .describe(
           'What the APP did not tell Reticle, and the one change that would fix it — each entry is { kind, missing, cost, fix, source?, ref? }. Reported ONLY where an absence made THIS verdict weaker: a failing assertion with no source to point at, or a state assertion against an app that registers no store. Never a survey of the page, so an entry is always work worth doing now. OMITTED when the app told Reticle everything it needed.',
         ),
+      engineBlindSpots: engineBlindSpotsOutput,
     },
     handler: async (deps, args) => {
       const timeout = asNumber(args['timeout_ms']) ?? 0;
@@ -553,7 +570,9 @@ export const OBSERVE_TOOLS: ToolDef[] = [
       // Refused up front rather than waited out: a body clause this session cannot answer would
       // burn the whole timeout to report something knowable now. See #801(C).
       const bodyRefusal = bodyClauseRefusal(predicate, session);
-      if (bodyRefusal !== undefined) throw new Error(bodyRefusal);
+      if (bodyRefusal !== undefined) {
+        throw new Error(bodyRefusal);
+      }
       // Honesty: explicit since wins; else default to the last act's cursor; else the whole buffer.
       let since = asNumber(args['since']) ?? session.lastAct.cursor() ?? 0;
       // Declared BEFORE the verdict, so the undeclared-change read below finds it open and stays
@@ -585,7 +604,9 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         reevaluate: (next, budget) => waitForPredicate(next, predicate, budget, 0),
       });
       // The successor's buffer is its own: the departed session's cursor means nothing there.
-      if (followed.followed) since = 0;
+      if (followed.followed) {
+        since = 0;
+      }
       session = followed.session;
       const verdict = followed.verdict;
       // A GREEN presence-only assertion is the dangerous case (a wrong element can fake it) — nudge
@@ -602,8 +623,10 @@ export const OBSERVE_TOOLS: ToolDef[] = [
             : {};
       // Asked of every verdict drawn after an observed edit, not once per edit — see
       // isChangeUndeclared for why repeating it is disclosure rather than nagging.
+      // Read once: the undeclared-change check and the engine's claim reading share it.
+      const declared = await openSessionIntents(deps, asString(args['sessionId']));
       const changeUndeclared = await isChangeUndeclared(session.currentEditEpoch, () =>
-        openSessionIntents(deps, asString(args['sessionId'])),
+        Promise.resolve(declared),
       );
       const { decision, contradictions, coverage, gaps, verdictEffect } = await assertVerdict(
         session,
@@ -669,6 +692,7 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         // The filter belongs where the response is assembled anyway — telemetry above keeps the
         // full text. See gap-novelty.ts.
         ...(gaps.length > 0 ? { instrumentationGaps: withGapNovelty(session.id, gaps) } : {}),
+        ...engineBlindSpotsField(session.id, predicate, args['intent'], declared),
         ...advice,
         ...coverage,
         // The SAME pointer the journal keeps, not a second lookup — one verdict, one file:line.
@@ -899,7 +923,9 @@ export const OBSERVE_TOOLS: ToolDef[] = [
         .optional()
         .describe('Total matches before `limit` — present only when capped.'),
       droppedOldest: z.number().optional().describe('How many older matches `limit` dropped.'),
-      hint: z.object({ totalInWindow: z.number(), byLevel: z.record(z.number()) }).optional(),
+      hint: z
+        .object({ totalInWindow: z.number(), byLevel: z.record(z.string(), z.number()) })
+        .optional(),
       cost: z.object({ bytes: z.number(), tokens: z.number() }).optional(),
       ...bufferOutputShape,
     },

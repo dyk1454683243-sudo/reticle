@@ -86,6 +86,29 @@ describe('the diagnosis says what the break-matrix asserts', () => {
 
   it('still names the two readable outcomes distinctly', () => {
     expect(describePage(PageFinding.SDK_MISSING, 'http://x/')).toContain('SDK is NOT in the page');
-    expect(describePage(PageFinding.SDK_PRESENT, 'http://x/')).toContain('SDK IS in the page');
+    expect(describePage(PageFinding.SDK_PRESENT, 'http://x/')).toContain('references the SDK');
   });
+});
+
+/**
+ * The probe reads the HTML text, so it sees a reference to `@reticlehq/browser`, not a loaded SDK.
+ * A static page whose pinned CDN version returned 404 printed "The SDK IS in the page", and the
+ * reader then trusted the wiring. The import had failed, and only the browser console showed it.
+ */
+describe('a reference to the SDK is not a loaded SDK', () => {
+  for (const daemonSpoke of [false, true]) {
+    it(`does not claim the SDK is in the page (daemon spoke: ${String(daemonSpoke)})`, () => {
+      const line = describePage(PageFinding.SDK_PRESENT, URL, daemonSpoke);
+      expect(line).not.toContain('SDK IS in the page');
+      expect(line).not.toContain('wiring is correct');
+      expect(line).toContain('references the SDK');
+    });
+
+    it(`sends the reader to the console for a failed import (daemon spoke: ${String(daemonSpoke)})`, () => {
+      const line = describePage(PageFinding.SDK_PRESENT, URL, daemonSpoke);
+      expect(line).toContain('browser console');
+      expect(line).toContain('failed import of @reticlehq/browser');
+      expect(line).toContain('CDN 404');
+    });
+  }
 });

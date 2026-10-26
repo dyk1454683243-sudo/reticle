@@ -47,4 +47,21 @@ describe('waitForDaemon', () => {
       }),
     ).rejects.toThrow(/held by/);
   });
+
+  // A daemon that dies while it starts never serves. The wait polled its port for the full timeout,
+  // and the tool call behind it waited too.
+  it('gives up at once when the daemon process it waits for has exited', async () => {
+    let probes = 0;
+    await expect(
+      waitForDaemon(PORT, {
+        tcpOpen: () => {
+          probes++;
+          return Promise.resolve(false);
+        },
+        status: () => Promise.resolve(undefined),
+        alive: () => false,
+      }),
+    ).rejects.toThrow(/exited before it was ready/);
+    expect(probes, 'no poll after the process is gone').toBe(1);
+  });
 });

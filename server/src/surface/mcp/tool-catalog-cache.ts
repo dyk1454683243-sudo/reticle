@@ -65,7 +65,16 @@ export class ToolCatalogCache {
   observe(line: string): void {
     const msg = parse(line);
     const tools = msg?.result?.tools;
-    if (Array.isArray(tools) && tools.length > 0) this.#tools = tools;
+    if (Array.isArray(tools) && tools.length > 0) {
+      this.#tools = tools;
+    }
+  }
+
+  /** Hold a list that did not come from the daemon: the static catalog, while the daemon starts. */
+  remember(tools: unknown[]): void {
+    if (tools.length > 0) {
+      this.#tools = tools;
+    }
   }
 
   has(): boolean {
@@ -78,10 +87,16 @@ export class ToolCatalogCache {
    * id is not an answer, it is noise the client will never match.
    */
   answer(request: string): string | null {
-    if (this.#tools === undefined) return null;
+    if (this.#tools === undefined) {
+      return null;
+    }
     const msg = parse(request);
-    if (msg?.method !== LIST_METHOD) return null;
-    if (msg.id === undefined || null === msg.id) return null;
+    if (msg?.method !== LIST_METHOD) {
+      return null;
+    }
+    if (msg.id === undefined || null === msg.id) {
+      return null;
+    }
     return JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: this.#tools } });
   }
 }

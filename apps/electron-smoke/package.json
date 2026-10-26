@@ -1,6 +1,6 @@
 {
   "name": "@reticlehq/electron-smoke",
-  "version": "3.7.0",
+  "version": "3.8.1",
   "private": true,
   "description": "A real Electron app (Vite + React renderer, contextBridge IPC) to smoke-test Reticle on Electron.",
   "type": "module",
@@ -24,7 +24,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
-    "electron": "^44.5.0",
+    "electron": "^44.9.1",
     "vite": "^8.2.1",
     "wait-on": "^9.1.0",
     "@reticlehq/electron": "workspace:*"

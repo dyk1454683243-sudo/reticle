@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { firstCallOpener, type FirstCallIo } from './zero-install-first-call.js';
+import {
+  firstCallOpener,
+  projectAppUrlFinder,
+  type FirstCallIo,
+} from './zero-install-first-call.js';
 
 const APP = mkdtempSync(join(tmpdir(), 'reticle-first-call-'));
 writeFileSync(join(APP, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }), 'utf8');
@@ -46,6 +50,8 @@ describe('firstCallOpener', () => {
     expect(opened?.notice).toMatch(/source file:line/);
     expect(opened?.notice).toContain('npx @reticlehq/server init');
     expect(opened?.notice).toMatch(/restart the dev server/i);
+    // `init` changes the user's files, so the notice asks first, as every other offer of it does.
+    expect(opened?.notice).toContain('Ask the user before you wire the app');
   });
 
   it('accepts a server running in a folder inside the project (a workspace app)', async () => {
@@ -105,5 +111,17 @@ describe('firstCallOpener', () => {
     expect(await open()).toBeUndefined();
     up = true;
     expect((await open())?.url).toBe('http://localhost:5173');
+  });
+});
+
+describe('projectAppUrlFinder', () => {
+  it("names the one dev server in this project's folder, and opens nothing", async () => {
+    const ports = io({ 5173: APP, 3000: '/somewhere/else' });
+    expect(await projectAppUrlFinder(ports)()).toBe('http://localhost:5173');
+    expect(ports.leased).toEqual([]);
+  });
+
+  it('names none when two servers run in the project', async () => {
+    expect(await projectAppUrlFinder(io({ 5173: APP, 3000: APP }))()).toBeUndefined();
   });
 });

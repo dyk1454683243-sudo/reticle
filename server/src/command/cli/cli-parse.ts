@@ -4,6 +4,7 @@
  * and re-exports this surface.
  */
 import { parseFeedbackArgs, type ParsedFeedback } from './cli-parse-feedback.js';
+import { HEADLESS_FLAG, parseServeFlags } from './cli-parse-serve.js';
 import { parseVerifySuffix } from './cli-parse-verify.js';
 import {
   HEADED_FLAG,
@@ -23,12 +24,20 @@ import {
 // Re-exported because the daemon's own argv builder reaches for these through this module, which is
 // where the grammar has always lived as far as every caller is concerned.
 export { HEADED_FLAG, PORT_FLAG };
+export {
+  DRIVE_FLAG,
+  HEADLESS_FLAG,
+  HTTP_FLAG,
+  HTTP_PORT_FLAG,
+  HTTP_TOKEN_FLAG,
+} from './cli-parse-serve.js';
 import { FORCE_FLAG } from './cli-kill.js';
 
 // Re-exported so every existing importer of these flags is unaffected by the file split.
 export {
   AGENT_FLAG,
   BUG_FLAG,
+  CONTACT_FLAG,
   FEEDBACK_KINDS,
   KIND_FLAG,
   RATING_FLAG,
@@ -88,6 +97,15 @@ export const DAEMON_INNER_COMMAND = '_daemon';
 export const UNKNOWN_COMMAND = 'unknown';
 const HELP_COMMAND = 'help';
 const HELP_FLAGS: ReadonlySet<string> = new Set(['--help', '-h']);
+/**
+ * Commands that only ask about the CLI. An agent often runs one before anything else, so the first
+ * run on a machine is not the install until a real command follows.
+ */
+export const PROBE_COMMANDS: ReadonlySet<string> = new Set([
+  VERSION_COMMAND,
+  HELP_COMMAND,
+  TELEMETRY_COMMAND,
+]);
 /** Every command the typed parser below routes. The parser refuses any word not in this list. */
 export const LOCAL_COMMANDS: readonly string[] = [
   INIT_COMMAND,
@@ -139,24 +157,21 @@ const COMMAND_FLAG_ALIASES: ReadonlyMap<string, string> = new Map([
  */
 function numberFlag(args: readonly string[], name: string): number {
   const at = args.indexOf(name);
-  if (at < 0) return 0;
+  if (at < 0) {
+    return 0;
+  }
   const raw = Number(args[at + 1]);
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 0;
 }
 
 /** The subcommand name if we recognize it, else `unknown`. Bare `reticle` reports `help`. */
 export function knownCommand(arg: string | undefined): string {
-  if (arg === undefined || '' === arg) return HELP_COMMAND;
+  if (arg === undefined || '' === arg) {
+    return HELP_COMMAND;
+  }
   return KNOWN_COMMANDS.has(arg) ? arg : (COMMAND_FLAG_ALIASES.get(arg) ?? UNKNOWN_COMMAND);
 }
 
-/**
- * Force a hidden browser. The default is now HEADED: a run nobody can see is a run nobody trusts,
- * and every "did it actually do anything?" question cost a round-trip. CI passes this (or just sets
- * CI, which flips the default) because there is no display there to be headed on.
- */
-export const HEADLESS_FLAG = '--headless';
-export const DRIVE_FLAG = '--drive';
 const QUIET_FLAG = '--quiet';
 const DRY_RUN_FLAG = '--dry-run';
 const YES_FLAG = '--yes';
@@ -229,9 +244,6 @@ const LICENSE_FLAG = '--license';
 const NO_INSTALL_FLAG = '--no-install';
 /** Give this checkout a project id of its own: a copied repository keeps the original's. */
 const NEW_ID_FLAG = '--new-id';
-export const HTTP_FLAG = '--http';
-export const HTTP_PORT_FLAG = '--http-port';
-export const HTTP_TOKEN_FLAG = '--http-token';
 /**
  * A predicate for a flow-free, one-shot verdict against the daemon that is already running.
  *
@@ -330,18 +342,6 @@ export type CliResult =
     }
   | { kind: 'error'; message: string };
 
-type ServeFlags =
-  | {
-      kind: 'ok';
-      port: number;
-      driveUrl?: string;
-      headless: boolean;
-      http: boolean;
-      httpPort?: number;
-      httpToken?: string;
-    }
-  | { kind: 'error'; message: string };
-
 /**
  * A usage error names the thing that was wrong.
  *
@@ -354,86 +354,20 @@ type ServeFlags =
  * The help text is still shown — cli.ts renders it as readable text underneath. It is just not the
  * message any more.
  */
-const requiresHttp = (flag: string): ParseError => ({
-  kind: 'error',
-  message: `${flag} requires ${HTTP_FLAG} — it configures the verify endpoint ${HTTP_FLAG} starts`,
-});
 const unknownCommand = (command: string): ParseError => ({
   kind: 'error',
   message: `unknown command '${command}'`,
 });
 
-function parseServeFlags(
-  args: string[],
-  defaultPort: number,
-  defaultHeadless: boolean,
-): ServeFlags {
-  let port = defaultPort;
-  let driveUrl: string | undefined;
-  let headless = defaultHeadless;
-  let http = false;
-  let httpPort: number | undefined;
-  let httpToken: string | undefined;
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
-    // `i < args.length` already guarantees this, but the index signature does not say so and the
-    // unknown-argument error needs a real string to name.
-    if (arg === undefined) break;
-    if (arg === PORT_FLAG) {
-      i++;
-      const n = args[i];
-      if (n === undefined) return missingValue(PORT_FLAG);
-      const parsed = parseInt(n, 10);
-      if (isNaN(parsed)) return notANumber(PORT_FLAG, n);
-      port = parsed;
-    } else if (arg === DRIVE_FLAG) {
-      i++;
-      driveUrl = args[i];
-      if (driveUrl === undefined) return missingValue(DRIVE_FLAG);
-    } else if (arg === HEADED_FLAG) {
-      headless = false;
-    } else if (arg === HEADLESS_FLAG) {
-      headless = true;
-    } else if (arg === HTTP_FLAG) {
-      http = true;
-    } else if (arg === HTTP_PORT_FLAG) {
-      i++;
-      const n = args[i];
-      if (n === undefined) return missingValue(HTTP_PORT_FLAG);
-      const parsed = parseInt(n, 10);
-      if (isNaN(parsed)) return notANumber(HTTP_PORT_FLAG, n);
-      httpPort = parsed;
-    } else if (arg === HTTP_TOKEN_FLAG) {
-      i++;
-      httpToken = args[i];
-      if (httpToken === undefined) return missingValue(HTTP_TOKEN_FLAG);
-    } else {
-      return unknownArgument(arg);
-    }
-    i++;
-  }
-  // Without `--http` these flags configure an endpoint nothing starts, and they were accepted and
-  // silently ignored — worse than being rejected, because the whole reason to pass them is to be
-  // honoured (#687).
-  if (!http && httpPort !== undefined) return requiresHttp(HTTP_PORT_FLAG);
-  if (!http && httpToken !== undefined) return requiresHttp(HTTP_TOKEN_FLAG);
-  return {
-    kind: 'ok',
-    port,
-    headless,
-    http,
-    ...(driveUrl !== undefined ? { driveUrl } : {}),
-    ...(httpPort !== undefined ? { httpPort } : {}),
-    ...(httpToken !== undefined ? { httpToken } : {}),
-  };
-}
-
 function parsePortFlag(args: string[], defaultPort: number): number {
   const idx = args.indexOf(PORT_FLAG);
-  if (-1 === idx) return defaultPort;
+  if (-1 === idx) {
+    return defaultPort;
+  }
   const n = args[idx + 1];
-  if (n === undefined) return defaultPort;
+  if (n === undefined) {
+    return defaultPort;
+  }
   const parsed = parseInt(n, 10);
   return isNaN(parsed) ? defaultPort : parsed;
 }
@@ -458,7 +392,9 @@ function parseDriveSuffix(args: string[], port: number, defaultHeadless: boolean
       return unknownArgument(arg);
     }
   }
-  if (driveUrl === undefined) return missingOperand(DRIVE_COMMAND, 'a url');
+  if (driveUrl === undefined) {
+    return missingOperand(DRIVE_COMMAND, 'a url');
+  }
   return { kind: 'ok', port, driveUrl, headless };
 }
 
@@ -514,25 +450,35 @@ function parseInitFlags(args: string[]): InitFlags {
     const arg = args[i];
     // `i < args.length` already guarantees this, but the index signature does not say so and the
     // unknown-argument error needs a real string to name.
-    if (arg === undefined) break;
+    if (arg === undefined) {
+      break;
+    }
     if (arg === PORT_FLAG) {
       i++;
       const n = args[i];
-      if (n === undefined) return missingValue(PORT_FLAG);
+      if (n === undefined) {
+        return missingValue(PORT_FLAG);
+      }
       const parsed = parseInt(n, 10);
-      if (isNaN(parsed)) return notANumber(PORT_FLAG, n);
+      if (isNaN(parsed)) {
+        return notANumber(PORT_FLAG, n);
+      }
       port = parsed;
     } else if (arg === APP_FLAG) {
       i++;
       const value = args[i];
-      if (value === undefined) return missingValue(APP_FLAG);
+      if (value === undefined) {
+        return missingValue(APP_FLAG);
+      }
       app = value;
     } else if (arg === FLOW_FLAG || arg === NO_DRIVE_FLAG || arg === DRIVE_MODEL_FLAG) {
       return retiredFlag(arg, FIRST_RUN_MOVED);
     } else if (arg === ENV_FLAG) {
       i++;
       const value = args[i];
-      if (value === undefined) return missingValue(ENV_FLAG);
+      if (value === undefined) {
+        return missingValue(ENV_FLAG);
+      }
       env.push(value);
     } else if (arg === FILES_ONLY_FLAG) {
       filesOnly = true;
@@ -557,19 +503,27 @@ function parseInitFlags(args: string[]): InitFlags {
     } else if (arg === URL_FLAG) {
       i++;
       const value = args[i];
-      if (value === undefined) return missingValue(URL_FLAG);
+      if (value === undefined) {
+        return missingValue(URL_FLAG);
+      }
       url = value;
     } else if (arg === LICENSE_FLAG) {
       i++;
       const value = args[i];
-      if (value === undefined) return missingValue(LICENSE_FLAG);
+      if (value === undefined) {
+        return missingValue(LICENSE_FLAG);
+      }
       licenseKey = value;
     } else if (arg === TIMEOUT_FLAG_INIT) {
       i++;
       const value = args[i];
-      if (value === undefined) return missingValue(TIMEOUT_FLAG_INIT);
+      if (value === undefined) {
+        return missingValue(TIMEOUT_FLAG_INIT);
+      }
       const seconds = parseInt(value, 10);
-      if (isNaN(seconds)) return notANumber(TIMEOUT_FLAG_INIT, value);
+      if (isNaN(seconds)) {
+        return notANumber(TIMEOUT_FLAG_INIT, value);
+      }
       timeoutSeconds = seconds;
     } else if (arg === NO_MCP_FLAG) {
       mcp = false;
@@ -642,7 +596,9 @@ function parseTargetArgs(rest: string[]): { files: string[]; since?: string } {
       i += 1;
       continue;
     }
-    if (arg !== undefined && !arg.startsWith('-')) files.push(arg);
+    if (arg !== undefined && !arg.startsWith('-')) {
+      files.push(arg);
+    }
   }
   return since === undefined ? { files } : { files, since };
 }
@@ -653,7 +609,9 @@ function parseTargetArgs(rest: string[]): { files: string[]; since?: string } {
  * workspace itself, and a tutorial only dials one when asked to run.
  */
 export function dialsTheDaemon(parsed: CliResult): boolean {
-  if ('init' === parsed.kind) return false;
+  if ('init' === parsed.kind) {
+    return false;
+  }
   return 'port' in parsed;
 }
 
@@ -669,16 +627,21 @@ export function parseCliArgs(
   defaultHeadless = false,
 ): CliResult {
   // Bare `reticle` is `serve`.
-  if (0 === argv.length)
+  if (0 === argv.length) {
     return { kind: 'serve', port: defaultPort, headless: defaultHeadless, http: false };
+  }
 
   const [cmd, ...rest] = argv;
   // Guaranteed by the bare-argv check above; restated so the unknown-command error can name it.
-  if (cmd === undefined) return { kind: 'error', message: CLI_USAGE };
+  if (cmd === undefined) {
+    return { kind: 'error', message: CLI_USAGE };
+  }
 
   // `version` (or the conventional -v/--version flags) prints the running version — the diagnostic the
   // troubleshooting docs lean on to confirm which npx-resolved build is actually executing.
-  if (cmd === VERSION_COMMAND || '--version' === cmd || '-v' === cmd) return { kind: 'version' };
+  if (cmd === VERSION_COMMAND || '--version' === cmd || '-v' === cmd) {
+    return { kind: 'version' };
+  }
 
   // `help` (and the conventional -h/--help) print usage to stdout and exit 0 — the universal first move
   // for a new user, which otherwise fell through to a JSON error with exit 1.
@@ -693,20 +656,28 @@ export function parseCliArgs(
   // Removed commands answer before help does: `reticle hunt --help` should say it is gone, not
   // describe something that no longer runs.
   const removed = REMOVED_COMMANDS.get(cmd);
-  if (removed !== undefined) return { kind: 'removed', message: removedNote(cmd, removed) };
+  if (removed !== undefined) {
+    return { kind: 'removed', message: removedNote(cmd, removed) };
+  }
   if (HELP_COMMAND === cmd || HELP_FLAGS.has(cmd)) {
     // `reticle help all`, `reticle --help all`, `reticle help init`.
     const topic = rest.find((arg) => !HELP_FLAGS.has(arg));
     return topic === undefined ? { kind: 'help' } : { kind: 'help', topic };
   }
-  if (argv.some((arg) => HELP_FLAGS.has(arg))) return { kind: 'help', topic: cmd };
+  if (argv.some((arg) => HELP_FLAGS.has(arg))) {
+    return { kind: 'help', topic: cmd };
+  }
 
   // The list is the gate, so a command cannot be routed without also being named in telemetry.
-  if (!LOCAL_COMMAND_SET.has(cmd)) return unknownCommand(cmd);
+  if (!LOCAL_COMMAND_SET.has(cmd)) {
+    return unknownCommand(cmd);
+  }
   switch (cmd) {
     case INIT_COMMAND: {
       const r = parseInitFlags(rest);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return {
         kind: 'init',
         port: r.port,
@@ -732,7 +703,9 @@ export function parseCliArgs(
     }
     case SERVE_COMMAND: {
       const r = parseServeFlags(rest, defaultPort, defaultHeadless);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return {
         kind: 'serve',
         port: r.port,
@@ -747,7 +720,9 @@ export function parseCliArgs(
       const port = parsePortFlag(rest, defaultPort);
       // `stop --force` is what `kill` was: free the port by its listener, which must still be a
       // Reticle daemon. Overriding that refusal stays on `restart --force` and the old `kill --force`.
-      if (rest.includes(FORCE_FLAG)) return { kind: 'kill', port, force: false };
+      if (rest.includes(FORCE_FLAG)) {
+        return { kind: 'kill', port, force: false };
+      }
       const quiet = rest.includes(QUIET_FLAG);
       return { kind: 'stop', port, quiet };
     }
@@ -802,7 +777,9 @@ export function parseCliArgs(
       }
       // Only `mcp` today. A bare `reticle setup` falls to help rather than guessing, because the
       // next subcommand here will not be a synonym for this one.
-      if (what !== 'mcp') return { kind: 'help', topic: SETUP_COMMAND };
+      if (what !== 'mcp') {
+        return { kind: 'help', topic: SETUP_COMMAND };
+      }
       return { kind: 'setup-mcp' };
     }
     case LICENSE_COMMAND:
@@ -831,12 +808,16 @@ export function parseCliArgs(
     }
     case DRIVE_COMMAND: {
       const r = parseDriveSuffix(rest, defaultPort, defaultHeadless);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return { kind: 'drive', port: r.port, driveUrl: r.driveUrl, headless: r.headless };
     }
     case DAEMON_INNER_COMMAND: {
       const r = parseServeFlags(rest, defaultPort, defaultHeadless);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return {
         kind: '_daemon',
         port: r.port,
@@ -849,7 +830,9 @@ export function parseCliArgs(
     }
     case VERIFY_COMMAND: {
       const r = parseVerifySuffix(rest, defaultPort);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return {
         kind: 'verify',
         url: r.url,
@@ -910,7 +893,9 @@ export function parseCliArgs(
       return { kind: 'rollback' };
     case MCP_COMMAND: {
       const r = parseServeFlags(rest, defaultPort, defaultHeadless);
-      if ('error' === r.kind) return r;
+      if ('error' === r.kind) {
+        return r;
+      }
       return {
         kind: 'mcp',
         port: r.port,

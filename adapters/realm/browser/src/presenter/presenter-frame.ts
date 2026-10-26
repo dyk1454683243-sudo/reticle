@@ -7,9 +7,9 @@
  * page now takes the same slot, size and surface from here, and this sheet is injected LAST so it
  * wins over each panel's own geometry without touching their internals.
  *
- * The rail is the strip between the open page and the toolbar, shared by every page. Signed out it
- * asks for a sign-in and says what it unlocks (the Harness); signed in it carries the promo slides.
- * It is one element outside every panel, so a page added later cannot forget it.
+ * The rail is the strip between the open page and the toolbar, shared by every page. It carries the
+ * promo slides. Signed out, the rail is hidden and the sign-in ask (what signing in unlocks: the
+ * Harness) sits inside the Agent Log instead: as a card of its own it floated over the app.
  */
 import type { AccountState } from '@reticlehq/core';
 import { ACCOUNT_SIGNIN_ATTR, ACCOUNT_TEXT } from './presenter-account.js';
@@ -43,24 +43,29 @@ export const RAIL_TEXT = {
   CTA: 'Sign in',
 } as const;
 
-export const RAIL_HTML = `<div ${RAIL_ATTR} class="reticle-rail" role="complementary" aria-label="Reticle">
-  <div ${RAIL_SIGNIN_ATTR} class="reticle-rail-signin" hidden>
+/** The sign-in ask, in the Agent Log's footer. The attribute keeps its name: telemetry reads it. */
+export const RAIL_SIGNIN_HTML = `<div ${RAIL_SIGNIN_ATTR} class="reticle-rail-signin" hidden>
     <span class="reticle-rail-copy"><strong>${RAIL_TEXT.TITLE}</strong><span>${RAIL_TEXT.DETAIL}</span></span>
     <button type="button" ${ACCOUNT_SIGNIN_ATTR} class="reticle-rail-cta" title="${ACCOUNT_TEXT.SIGNIN_TITLE}">${RAIL_TEXT.CTA}</button>
-  </div>
+  </div>`;
+
+export const RAIL_HTML = `<div ${RAIL_ATTR} class="reticle-rail" role="complementary" aria-label="Reticle">
   <div ${RAIL_PROMO_ATTR} class="reticle-rail-promo"></div>
 </div>`;
 
 /**
- * Signed out: the sign-in ask replaces the promo. Unknown (no push yet, or no cloud at all): the
- * promo, because a sign-in prompt for an account state nobody has reported would be a guess.
+ * Signed out: the sign-in ask shows in the Agent Log and the rail goes. Unknown (no push yet, or no
+ * cloud at all): the promo, because a sign-in prompt for an account state nobody has reported would
+ * be a guess.
  */
 export function paintRail(root: HTMLElement, account: AccountState | undefined): void {
   const signin = root.querySelector<HTMLElement>(`[${RAIL_SIGNIN_ATTR}]`);
-  const promo = root.querySelector<HTMLElement>(`[${RAIL_PROMO_ATTR}]`);
+  const rail = root.querySelector<HTMLElement>(`[${RAIL_ATTR}]`);
   const signedOut = account !== undefined && !account.signedIn;
   if (signin !== null) signin.hidden = !signedOut;
-  if (promo !== null) promo.hidden = signedOut;
+  if (rail !== null) {
+    rail.hidden = signedOut;
+  }
 }
 
 const PAGES = `:is([${CHAT_PANEL_ATTR}],[${PAGE_PANEL_ATTR}],[${REPORT_PANEL_ATTR}],[${SETTINGS_PANEL_ATTR}])`;
@@ -194,18 +199,26 @@ ${BELOW} ${PAGES}{bottom:auto;top:calc(100% + 8px + var(--reticle-rail-h) + var(
   pointer-events:auto;}
 ${BELOW} [${RAIL_ATTR}]{bottom:auto;top:calc(100% + 8px);}
 ${ANY_OPEN} [${RAIL_ATTR}]{display:flex;}
+${ANY_OPEN} [${RAIL_ATTR}][hidden]{display:none;}
+/* No rail, no gap for it: the page sits straight above the toolbar. */
+[${DOCK_ATTR}]:has(> [${RAIL_ATTR}][hidden]){--reticle-rail-h:0px;--reticle-frame-gap:0px;}
 /* The capsule and the rail share a slot: the capsule is for "nothing open", the rail for "a page is". */
 ${ANY_OPEN} [${CHAT_PILL_ATTR}]{display:none !important;}
 [${RAIL_ATTR}] > [hidden]{display:none !important;}
-[${RAIL_ATTR}] .reticle-rail-signin,[${RAIL_ATTR}] .reticle-rail-promo{flex:1;min-width:0;}
-[${RAIL_ATTR}] .reticle-rail-signin{display:flex;align-items:center;gap:var(--reticle-hud-space-3);}
-[${RAIL_ATTR}] .reticle-rail-copy{display:flex;flex:1;min-width:0;flex-direction:column;line-height:1.3;}
-[${RAIL_ATTR}] .reticle-rail-copy strong{font-size:var(--reticle-hud-size-sm);font-weight:600;}
-[${RAIL_ATTR}] .reticle-rail-copy span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--reticle-hud-size-xs);color:var(--reticle-hud-text-muted);}
-[${RAIL_ATTR}] .reticle-rail-cta{flex:none;height:28px;padding:0 var(--reticle-hud-space-3);border:0;border-radius:var(--reticle-hud-radius-pill);
+[${RAIL_ATTR}] .reticle-rail-promo{flex:1;min-width:0;}
+/* The sign-in ask: one row in the Agent Log, above its footer. */
+[${RAIL_SIGNIN_ATTR}]{display:flex;flex:none;align-items:center;gap:var(--reticle-hud-space-3);
+  margin:0 var(--reticle-hud-space-3) var(--reticle-hud-space-2);padding:var(--reticle-hud-space-2) var(--reticle-hud-space-3);
+  border:1px solid color-mix(in srgb,var(--reticle-hud-brand) 30%,var(--reticle-hud-border));border-radius:var(--reticle-hud-radius-md);
+  background:linear-gradient(135deg,var(--reticle-hud-brand-soft),transparent 65%);}
+[${RAIL_SIGNIN_ATTR}][hidden]{display:none;}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-copy{display:flex;flex:1;min-width:0;flex-direction:column;line-height:1.3;}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-copy strong{font-size:var(--reticle-hud-size-sm);font-weight:600;}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-copy span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--reticle-hud-size-xs);color:var(--reticle-hud-text-muted);}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-cta{flex:none;height:28px;padding:0 var(--reticle-hud-space-3);border:0;border-radius:var(--reticle-hud-radius-pill);
   background:var(--reticle-hud-brand);color:#160b02;font:inherit;font-size:var(--reticle-hud-size-sm);font-weight:700;cursor:pointer;}
-[${RAIL_ATTR}] .reticle-rail-cta:hover{filter:brightness(1.08);}
-[${RAIL_ATTR}] .reticle-rail-cta:focus-visible{outline:2px solid var(--reticle-hud-text);outline-offset:2px;}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-cta:hover{filter:brightness(1.08);}
+[${RAIL_SIGNIN_ATTR}] .reticle-rail-cta:focus-visible{outline:2px solid var(--reticle-hud-text);outline-offset:2px;}
 /* The promo: one line of copy, its link, and dots. The carousel draws no frame of its own here. */
 [${RAIL_ATTR}] .reticle-carousel{margin:0;padding:0;border:0;background:none;}
 [${RAIL_ATTR}] .reticle-carousel-track{height:32px;overflow:hidden;}

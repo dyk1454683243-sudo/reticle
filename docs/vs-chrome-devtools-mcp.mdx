@@ -40,7 +40,7 @@ Note the flip. DevTools is cheaper on a small page and more expensive on a large
 
 - **Cheaper on simple pages**, as above.
 - **It is Chrome's own tooling**, which means the performance and tracing surface is deep and authoritative in a way third-party instrumentation is not.
-- **Nothing to install in your app.** No SDK, no plugin, no build-time step. If instrumenting is off the table, this matters a lot.
+- **Nothing to install in your app, at full depth.** Reticle can also check a page with nothing installed, through a leased tab, but its state, store and source-file reads need the SDK. DevTools MCP gives its full surface with no change to the app.
 - **Real pixels.** Actual rendered frames, with everything that implies.
 
 ## The two bugs
@@ -111,10 +111,10 @@ Neither tool forbids the other. A reasonable setup:
 </Accordion>
 
 <Accordion title="Do I have to instrument my app to use Reticle?">
-  You have to add the dev-only SDK, which is what `npx @reticlehq/server init` does. Beyond that,
-  look, act and observe work with zero component changes. Signals and registered stores are
-  optional, and they are what buys the assertions DevTools MCP structurally cannot make. If
-  instrumenting is off the table entirely, DevTools MCP is the correct choice.
+  No. With nothing installed, a leased tab checks the running app: the DOM, network, console and
+  routes. `npx @reticlehq/server init` adds the dev-only SDK, which adds component state, registered
+  stores and the source `file:line`. Signals and registered stores are optional, and they are what
+  buys the assertions DevTools MCP structurally cannot make.
 </Accordion>
 
 <Accordion title="Does Reticle give me performance traces?">

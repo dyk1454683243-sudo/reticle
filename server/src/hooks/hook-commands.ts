@@ -54,13 +54,22 @@ let inFlight = 0;
 const reported = new Set<string>();
 
 function reportOnce(key: string, message: string): void {
-  if (reported.has(key)) return;
+  if (reported.has(key)) {
+    return;
+  }
   reported.add(key);
   log(`hook: ${message}`);
 }
 
-/** Cached config plus the mtime it was read at, so an edit takes effect without a daemon restart. */
-let cached: { at: number; config: Record<string, string> } | undefined;
+/**
+ * Cached config plus the file and mtime it was read at, so an edit takes effect without a
+ * daemon restart.
+ *
+ * The path is part of the key. Two roots can share an mtime — a coarse filesystem stamps
+ * every write in the same millisecond — and a cache that remembers only the time returns
+ * the other root's commands.
+ */
+let cached: { path: string; at: number; config: Record<string, string> } | undefined;
 
 /**
  * Read `.reticle/hooks.json`, or nothing.
@@ -81,15 +90,17 @@ export function readHookConfig(reticleRoot: string): Record<string, string> {
     return {};
   }
   try {
-    return readOpenHookConfig(fd);
+    return readOpenHookConfig(fd, path);
   } finally {
     closeSync(fd);
   }
 }
 
-function readOpenHookConfig(fd: number): Record<string, string> {
+function readOpenHookConfig(fd: number, path: string): Record<string, string> {
   const mtime = fstatSync(fd).mtimeMs;
-  if (cached !== undefined && cached.at === mtime) return cached.config;
+  if (cached !== undefined && cached.path === path && cached.at === mtime) {
+    return cached.config;
+  }
   try {
     const parsed = HookConfigSchema.safeParse(JSON.parse(readFileSync(fd, 'utf8')));
     if (!parsed.success) {
@@ -97,7 +108,7 @@ function readOpenHookConfig(fd: number): Record<string, string> {
         `config:${String(mtime)}`,
         `${ReticleDir.HOOKS_FILE} is not a map of event→command`,
       );
-      cached = { at: mtime, config: {} };
+      cached = { path, at: mtime, config: {} };
       return {};
     }
     // An unknown event name is the likeliest mistake in this file and the one that is otherwise
@@ -113,14 +124,14 @@ function readOpenHookConfig(fd: number): Record<string, string> {
         `${ReticleDir.HOOKS_FILE} names "${event}", which is not a Reticle event. Known events: ${HOOK_EVENT_NAMES.join(', ')}`,
       );
     }
-    cached = { at: mtime, config: known };
+    cached = { path, at: mtime, config: known };
     return known;
   } catch (error) {
     reportOnce(
       `parse:${String(mtime)}`,
       `${ReticleDir.HOOKS_FILE} could not be read: ${error instanceof Error ? error.message : String(error)}`,
     );
-    cached = { at: mtime, config: {} };
+    cached = { path, at: mtime, config: {} };
     return {};
   }
 }
@@ -182,7 +193,9 @@ export function runHookCommand(command: string, payload: HookPayload, cwd: strin
 export function installCommandHooks(reticleRoot: string): () => void {
   return onHook(undefined, (payload: HookPayload) => {
     const command = readHookConfig(reticleRoot)[payload.event];
-    if (command === undefined || 0 === command.trim().length) return;
+    if (command === undefined || 0 === command.trim().length) {
+      return;
+    }
     runHookCommand(command, payload, reticleRoot);
   });
 }

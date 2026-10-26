@@ -8,13 +8,8 @@ import { openFailureNote, openLaunchFailureNote } from './cli/answers/open-note.
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { installCrashGuard } from './setup/setup-command.js';
-import { readDevServers } from './daemon/dev-servers.js';
-import {
-  hasAnyAppConnectedBefore,
-  hasProjectConnectedBefore,
-} from '@/memory/recall/prior/connection-memory.js';
-import { attachStatusFields } from '@/surface/mcp/attach-memory.js';
-import { splitBrainFields, withNextAction } from './cli/status-fields.js';
+import { handleStatus } from './cli/status-fields.js';
+export { handleStatus, reportStatus } from './cli/status-fields.js';
 import { reticleStateHome } from './daemon/daemon.js';
 import { handleMcp } from './cli/mcp-command.js';
 import { handleReport } from './cli/report-command.js';
@@ -30,35 +25,21 @@ import { pickDaemonPortToBind } from './daemon/binding/free-port.js';
 import { isSameOrAbove, portForInit, portFromEnv } from './setup/init/init-port.js';
 import { daemonStartOptions } from './cli/daemon-start-options.js';
 import { handleGate, loadNamedFlows, resolveChangedFiles } from './cli/cli-flow-commands.js';
-import {
-  RETICLE_DEFAULT_PORT,
-  ReticleDir,
-  ReticleEnv,
-  devServersForProject,
-} from '@reticlehq/core';
+import { RETICLE_DEFAULT_PORT, ReticleDir, ReticleEnv } from '@reticlehq/core';
 import { loadDotEnv } from '@/telemetry/dev-repo.js';
 import { licenseKeyFromEnvFiles } from '@/features/license/license-env.js';
 import { LICENSE_KEY_ENV } from '@/features/license/license.js';
 import { createNodeFileSystem } from '@/memory/project/fs/fs-port.js';
-import { localLinkOf, workspaceAppLinks } from './cli/status/workspace-links.js';
 import { affectedSavedFlows } from '@/language/flows/change/flow-sources.js';
 
-import { availableUpdate } from './update/update-nudge.js';
 import { handleUpdate, handleRollback } from './cli/cli-update-commands.js';
 import { headlessByDefault } from './cli/daemon-start-options.js';
 
 import { startDaemon } from '@/index.js';
-import {
-  accountStatusFields,
-  cmdLink,
-  connectInstalls,
-  isCloudCommand,
-  runCloudCommand,
-} from './cli/cloud-cli.js';
+import { cmdLink, connectInstalls, isCloudCommand, runCloudCommand } from './cli/cloud-cli.js';
 import { SERVER_VERSION } from './version/identity/server-version.js';
 import { log } from '@/log.js';
 import {
-  readPid,
   isAlive,
   removePid,
   spawnDaemon,
@@ -157,8 +138,12 @@ export function connectExit(
   cloudCode: number,
   initUnfinished: string | undefined,
 ): { code: number; note?: string } {
-  if (0 !== cloudCode) return { code: cloudCode };
-  if (initUnfinished === undefined) return { code: 0 };
+  if (0 !== cloudCode) {
+    return { code: cloudCode };
+  }
+  if (initUnfinished === undefined) {
+    return { code: 0 };
+  }
   if (InitFailure.DEPENDENCY_INSTALL === initUnfinished) {
     return { code: 0, note: MSG_CONNECTED_DEPS_PENDING };
   }
@@ -201,7 +186,9 @@ async function handleInit(parsed: {
       // projects its connected pages announced.
       daemonProjects: async (p) => {
         const claimed = daemonProjectAt(p, reticleStateHome());
-        if (claimed !== undefined && claimed.length > 0) return [claimed];
+        if (claimed !== undefined && claimed.length > 0) {
+          return [claimed];
+        }
         const { sessions } = summarizeStatus(await fetchStatus(p));
         return [
           ...new Set(sessions.flatMap((s) => (s.projectId === undefined ? [] : [s.projectId]))),
@@ -247,142 +234,6 @@ async function handleInit(parsed: {
 // `serve`, `stop` and `restart` live in `cli/lifecycle/daemon-lifecycle.ts`: one idea, and the
 // largest group this file could give up without splitting something that belongs together.
 import { handleServe, handleStop, handleRestart } from './cli/lifecycle/daemon-lifecycle.js';
-import { statusLines } from './cli/status/status-lines.js';
-
-/**
- * Report status to the terminal. `--json` writes one structured line to STDOUT so it can be piped
- * into `jq`; the human-readable block goes to stdout too. `log()` stays on stderr (the MCP
- * transport lives on stdout), so `--json` must not go through it.
- */
-export function reportStatus(fields: Record<string, unknown>, json: boolean): void {
-  if (json) {
-    const line = JSON.stringify({
-      t: new Date().toISOString(),
-      event: 'reticle_status',
-      ...fields,
-    });
-    process.stdout.write(`${line}\n`);
-    return;
-  }
-  process.stdout.write(`${statusLines(fields).join('\n')}\n`);
-}
-
-export async function handleStatus(port: number, json = false): Promise<void> {
-  // A broken session file must not cost the reader the rest of the status.
-  const account = await accountStatusFields().catch(() => ({}));
-  // At a workspace root that is no app of its own, each app and its link: "not linked" named none.
-  const linked = (account as { linkedProject?: unknown }).linkedProject;
-  if ('string' !== typeof linked && readProjectId(process.cwd()) === undefined)
-    Object.assign(account, {
-      workspaceApps: await workspaceAppLinks(process.cwd(), localLinkOf).catch(() => []),
-    });
-  const report = (fields: Record<string, unknown>): void =>
-    reportStatus({ ...fields, ...account }, json);
-  const pid = readPid(port);
-  // Durable, so it survives the daemon idling out — which is the state `status` is most often run in.
-  const projectId = readProjectId(process.cwd());
-  const previouslyConnected = hasAnyAppConnectedBefore(reticleStateHome(), port, projectId);
-  // The narrow twin. Every sentence that says "this project", and the decision about whether THIS
-  // app is instrumented, needs the question the wide one cannot answer without a project id.
-  const projectPreviouslyConnected = hasProjectConnectedBefore(reticleStateHome(), port, projectId);
-  // Whether `init` has run HERE. Registering the MCP server does not wire the app, and more than one
-  // path does the first without the second — so this is the commonest reason `status` has nothing to
-  // report, and it was not among the facts this command could state.
-  const initialized = projectId !== undefined;
-  // The OTHER half of the install, and the half this command could not see. A host that registers
-  // Reticle and never lists its tools looks exactly like an abandoned install from here — same idle
-  // daemon, same zero sessions — and the user sees a tool that does nothing. See attach-memory.ts.
-  const client = attachStatusFields(reticleStateHome(), port);
-  // What the dev servers themselves said. The reason this command could previously only guess at
-  // whether the app was running is that it had no way to see one; now the ones carrying Reticle
-  // announce, and the advice below stops contradicting the terminal the reader is looking at.
-  // Scoped to THIS project: the registry is machine-wide, and an unrelated app's dev server must
-  // not make this project look like it is running.
-  const devServerPorts = devServersForProject(readDevServers(reticleStateHome()), {
-    projectId,
-    root: process.cwd(),
-  }).map((d) => d.port);
-  // The failure where every individual check is green and the chain is broken: the agent's proxy and
-  // the app resolved their ports independently and landed on two different daemons. Reported from
-  // BOTH stances, because neither one can see it alone.
-  const split = splitBrainFields(port, projectId);
-  // Doctor and status must answer the same liveness question. A live pid only says that some
-  // process exists; a Reticle daemon is running only when the shared port probe reaches /status.
-  const presence = await probePresence(port, { tcpOpen: probeDaemon, status: fetchStatus });
-  if (!presenceIsUsable(presence)) {
-    report({
-      port,
-      running: false,
-      presence,
-      ...(presence === PortPresence.FOREIGN ? { reason: describePresence(presence, port) } : {}),
-      // `init` promises this command says why the app has not connected. Without it the answer was
-      // `running: false` and nothing else, which reads as "Reticle is broken" for what is usually
-      // just a daemon that has not been asked to do anything yet.
-      ...withNextAction({
-        running: false,
-        sessionCount: 0,
-        previouslyConnected,
-        projectPreviouslyConnected,
-        initialized,
-        devServerPorts,
-      }),
-      ...client,
-      ...split,
-    });
-    return;
-  }
-  // The daemon answered the same probe doctor trusts — ask it for live sessions + health.
-  const payload = await fetchStatus(port);
-  // `status` is the second-most-run command and the one a HUMAN types. The update nudge otherwise
-  // only rides a tool result, which the majority of daemons never produce — so the people most in
-  // need of an upgrade were the ones with no path to hearing about it.
-  const update = availableUpdate();
-  const nudge = update === undefined ? {} : { updateAvailable: update };
-  if (payload === undefined) {
-    report({
-      port,
-      running: true,
-      pid,
-      ...nudge,
-      ...withNextAction({
-        running: true,
-        sessionCount: 0,
-        previouslyConnected,
-        projectPreviouslyConnected,
-        initialized,
-        devServerPorts,
-      }),
-      ...client,
-      ...split,
-    });
-    return;
-  }
-  const summary = summarizeStatus(payload);
-  // Only when the daemon did NOT already explain itself. It has the whole diagnosis in-process and
-  // puts it on the wire as `why`; printing a second, thinner opinion beside it risks two confident
-  // answers pointing different ways, which is worse than one.
-  const next =
-    summary.why === undefined
-      ? withNextAction({
-          running: true,
-          ...summary,
-          previouslyConnected,
-          projectPreviouslyConnected,
-          initialized,
-          devServerPorts,
-        })
-      : {};
-  report({
-    port,
-    running: true,
-    pid,
-    ...summary,
-    ...next,
-    ...client,
-    ...split,
-    ...nudge,
-  });
-}
 
 /**
  * Print the running package version (resolved once in server-version.ts), and nothing else.
@@ -436,15 +287,21 @@ function ensureDaemon(port: number): Promise<void> {
       // upgrade does NOT take effect until that daemon dies, and nothing used to say so. Say it here,
       // where both versions are in hand, and keep attaching: killing another agent's daemon on a
       // version bump is worse than a loud warning.
-      if (presenceIsUsable(presence)) return warnOnDaemonSkew(port);
+      if (presenceIsUsable(presence)) {
+        return warnOnDaemonSkew(port);
+      }
       // Not free, not a daemon: a stranger holds the port. Spawning here is guaranteed to fail —
       // the child cannot bind — and `waitForDaemon` would then report READY anyway, because its
       // probe is the same bare TCP connect and the stranger accepts. That is the "serve reports
       // success for a daemon that never bound" shape. Refuse instead, with the sentence `doctor`
       // says.
-      if (PortPresence.FREE !== presence) throw new Error(describePresence(presence, port));
+      if (PortPresence.FREE !== presence) {
+        throw new Error(describePresence(presence, port));
+      }
       const scriptPath = process.argv[1];
-      if (scriptPath === undefined) throw new Error('cannot locate the reticle daemon script');
+      if (scriptPath === undefined) {
+        throw new Error('cannot locate the reticle daemon script');
+      }
       spawnDaemon(
         process.execPath,
         scriptPath,
@@ -476,7 +333,9 @@ async function waitForNewSession(port: number, before: number): Promise<boolean>
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const { sessions } = summarizeStatus(await fetchStatus(port));
-    if (sessions.length > before) return true;
+    if (sessions.length > before) {
+      return true;
+    }
   }
   return false;
 }
@@ -530,7 +389,9 @@ function handleOpen(requestedPort: number, url: string | undefined, navigate = f
         });
         log('reticle_open', { port, ...moved });
         // A loop or CI step reads the exit code, so a failed move must not exit 0.
-        if (moved['error'] !== undefined) process.exit(1);
+        if (moved['error'] !== undefined) {
+          process.exit(1);
+        }
         return;
       }
       if ('left-as-is' === decision.action) {
@@ -545,7 +406,9 @@ function handleOpen(requestedPort: number, url: string | undefined, navigate = f
             `a tab is connected on this origin but sitting on ${decision.url} — it was LEFT THERE, ` +
             `not navigated to ${decision.requested}. ${remedy}`,
         });
-        if (navigate) process.exit(1);
+        if (navigate) {
+          process.exit(1);
+        }
         return;
       }
       const launchError = await openInBrowser(decision.url);
@@ -665,6 +528,8 @@ function handleDaemonInner(parsed: {
       // argument, which would otherwise arrive as the reason.
       process.on('SIGTERM', () => shutdown(DaemonExitReason.SIGNAL));
       process.on('SIGINT', () => shutdown(DaemonExitReason.SIGNAL));
+      // `reticle stop` asks here first: on Windows a signal ends the process with no shutdown path.
+      server.onShutdownRequest?.(() => shutdown(DaemonExitReason.SIGNAL));
       // Self-shut-down when idle so a detached daemon (and any headless Chromium it launched) never
       // lingers on the user's machine after the editor closes. Reuses the same clean shutdown path.
       const attachedGraceEnv = process.env[ReticleEnv.IDLE_ATTACHED];
@@ -719,17 +584,20 @@ export function main(): void {
   // run then reported the licence as `missing`, which is indistinguishable from having none at all.
   // Only the key is taken; see license-env.ts for why nothing else is.
   const licenseKey = licenseKeyFromEnvFiles(process.cwd());
-  if (licenseKey !== undefined) process.env[LICENSE_KEY_ENV] = licenseKey;
+  if (licenseKey !== undefined) {
+    process.env[LICENSE_KEY_ENV] = licenseKey;
+  }
   const argv = process.argv.slice(2);
   // The agent's prompt hook, FIRST: before the version re-exec (it must not start a second CLI on
   // every prompt) and before telemetry, which must never see that a prompt existed, let alone it.
   // `--help` falls through to the parser, which prints what `hook` does.
   if (HOOK_COMMAND === argv[0] && !argv.some((arg) => '--help' === arg || '-h' === arg)) {
-    const prompt = 'prompt' === argv[1];
+    // `tool` too: a hook that fails must never be reported to the agent as its tool failing.
+    const agentHook = ['prompt', 'prompt-write', 'tool', 'tool-write'].includes(argv[1] ?? '');
     void handleHook(argv.slice(1))
       .then((code) => process.exit(code))
       // A hook that fails must still let the prompt through, so `prompt` exits 0 whatever happens.
-      .catch(() => process.exit(prompt ? 0 : 1));
+      .catch(() => process.exit(agentHook ? 0 : 1));
     return;
   }
   // Before anything reports or writes: a CLI a major away from the project's SDK makes every verdict
@@ -815,7 +683,9 @@ export function main(): void {
           }
         }
         const exit = connectExit(await runCloudCommand(argv), unfinished);
-        if (exit.note !== undefined) process.stderr.write(`${exit.note}\n`);
+        if (exit.note !== undefined) {
+          process.stderr.write(`${exit.note}\n`);
+        }
         return exit.code;
       })()
         .then((code) => process.exit(code))
@@ -843,7 +713,9 @@ export function main(): void {
     projectPort === undefined && envPort === undefined && !argv.includes(PORT_FLAG)
       ? workspacePortConflict(process.cwd())
       : undefined;
-  if (portConflict !== undefined) process.stderr.write(`${portConflict}\n`);
+  if (portConflict !== undefined) {
+    process.stderr.write(`${portConflict}\n`);
+  }
   // Registry BEFORE the default, and after both explicit sources.
   //
   // This is the line that ends the split brain. Build plugins have always asked the registry which
@@ -888,7 +760,9 @@ export function main(): void {
       break;
     case 'kill':
       void runKill(parsed.port, parsed.force).then((freed) => {
-        if (!freed) process.exit(1);
+        if (!freed) {
+          process.exit(1);
+        }
       });
       break;
     case 'restart':
@@ -910,6 +784,7 @@ export function main(): void {
         parsed.bug,
         parsed.feedbackKind,
         parsed.agent,
+        parsed.contact,
       );
       break;
     case 'version':
@@ -982,8 +857,12 @@ export function main(): void {
  */
 function isEntryPoint(): boolean {
   const argv1 = process.argv[1];
-  if (argv1 === undefined) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  if (argv1 === undefined) {
+    return false;
+  }
+  if (import.meta.url === pathToFileURL(argv1).href) {
+    return true;
+  }
   try {
     return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
   } catch {

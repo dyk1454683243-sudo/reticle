@@ -213,6 +213,12 @@ export const SETTINGS_STORAGE_KEY = ReticleStorageKey.PRESENTER_SETTINGS;
  * `autoOpenChat` in the settings profile is for.
  */
 export const MINIMISED_STORAGE_KEY = ReticleStorageKey.PRESENTER_MINIMISED;
+/**
+ * Per-BROWSER memory that the person left the panel open. `localStorage`, because it is their choice
+ * about the HUD, not about one tab. Only a person's press writes it; an agent that opened the panel
+ * did not choose anything for them.
+ */
+export const OPEN_STORAGE_KEY = ReticleStorageKey.PRESENTER_OPEN;
 /** Accent swatch applied to the dock chrome. */
 /** Overlay flag: is the page-edge glow wanted at all (user setting). */
 export const AMBIENT_GLOW_ATTR = 'data-reticle-ambient-glow';

@@ -31,3 +31,28 @@ export function harnessRequest(event: {
   if ('off' === text) return { kind, enabled: false };
   return undefined;
 }
+
+/** The flow name if this event is a panel ▶ replay request, else undefined. Pure boundary narrowing. */
+export function replayRequest(event: {
+  type: string;
+  data: Record<string, unknown>;
+}): string | undefined {
+  if (event.type !== EventType.HUMAN_CONTROL) {
+    return undefined;
+  }
+  if (event.data['kind'] !== HumanControlKind.REPLAY) {
+    return undefined;
+  }
+  const name = event.data['text'];
+  return 'string' === typeof name && name.length > 0 ? name : undefined;
+}
+
+/** True when this event is the panel's Sign in. Pure boundary narrowing, like the above. */
+export function isSigninRequest(event: { type: string; data: Record<string, unknown> }): boolean {
+  return event.type === EventType.HUMAN_CONTROL && event.data['kind'] === HumanControlKind.SIGNIN;
+}
+
+/** True when this event is the panel's "sync now" button. Pure boundary narrowing, like the above. */
+export function isSyncRequest(event: { type: string; data: Record<string, unknown> }): boolean {
+  return event.type === EventType.HUMAN_CONTROL && event.data['kind'] === HumanControlKind.SYNC;
+}

@@ -58,9 +58,14 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // 13 with `render-page.ts`, the in-page step screenshot. It has to be its own module: the command
   // registry imports it lazily, so a page downloads the renderer only when a picture is first drawn.
   // +1: stable-selector.ts, split out of query.ts when that file crossed the 1000-line cap (#1147).
-  'adapters/realm/browser/src/dom': 14,
+  // +1: text-match.ts, the text rules split out of query.ts at the 1000-line cap (#1782).
+  // +1: layout-audit.ts, the snapshot's opt-in audit. Not `dom/audit/`: it reads dom's a11y and refs
+  // and snapshot reads it, so a subdirectory would be two directories that need each other.
+  // +1: visibility.ts, the visibility checks split out of a11y.ts at the 1000-line cap (#1662).
+  // +1: query-finders.ts, the finder for each query field, split out of query.ts at the 1000-line cap (#1662).
+  'adapters/realm/browser/src/dom': 18,
   // +1: error-repeats.ts, the limiter every uncaught-error path in console.ts goes through (#986).
-  'adapters/realm/browser/src/observers': 25,
+  'adapters/realm/browser/src/observers': 27,
   // 17 since the HUD's position primitives left `presenter-drag.ts` for their own leaf: the drag
   // gesture re-syncs the dock layout, and the dock layout reads the HUD's position, so the two files
   // needed each other over primitives that belong to neither.
@@ -168,7 +173,9 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // 13 with `telemetry-bug.ts`: the `bug_found` schema, split out when the accuracy and signal
   // changes together pushed `telemetry.ts` over the cap. Grouping the seven `telemetry-*.ts` files
   // into one directory is the next step if this grows again.
-  'core/src': 13,
+  // 14 with `activation-entry.ts`: the `./activation` subpath. A subpath entry sits at the root
+  // beside `hud-entry.ts` and `tour-entry.ts`, so the page loader does not load the core barrel.
+  'core/src': 14,
   // 19 with `state-bookkeeping.ts`: telling a query cache's own bookkeeping from a state change.
   // 20 with `superseded-checks.ts`: the one rule every fold of a run's checks applies.
   'engine/src/evidence': 20,
@@ -203,7 +210,9 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // +1: nuxt-snippets.ts, split out of snippets.ts when it crossed the 1000-line cap.
   // +3: angular.ts, remix.ts and static-page.ts — one per stack `init` learned to wire, each beside
   // the patchers of its kind rather than folded into snippets.ts, which is near the cap already.
-  'init/src/patch': 20,
+  // +1: python-snippets.ts, split from snippets.ts when the snippets started to read the token at
+  // run time, because snippets.ts was near the cap.
+  'init/src/patch': 21,
   // Crossed the line at 11 with `plan-angular.ts` and `plan-electron-vite.ts`, one per stack `init`
   // learned to wire, each beside the other per-framework builders. 12 with `plan-vite.ts`: the Vite
   // plugin and capabilities steps every Vite-based stack composes, split out of `plan-framework.ts`
@@ -263,7 +272,10 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // 51 with `harness-gate.ts`: whether a Harness drive may start, split from `harness-explore.ts` at
   // its line cap; every gate caller already sits in this directory.
   // 52 with `run-report.ts`: the end-of-run report, beside `reticle-result.ts` whose words it shares.
-  'server/src/surface/tools': 52,
+  // 53 with `map-tools.ts`: `reticle_map`, a tool definition like its neighbours. The fold it reads
+  // with sits in `judgement/app-graph/` and imports no tool code, so the two never need each other.
+  // +1: session-ports.ts, the suite and session ports split out of lease-tools.ts at the 1000-line cap (#1667).
+  'server/src/surface/tools': 54,
   // Crossed the line when a planned step gained its own `expect`: the grading rule and its test
   // joined the act cluster (preflight, target, retry, capsule). Recorded rather than grouped,
   // because this directory IS the grouping -- these files were split out of act-tools.ts when it
@@ -284,7 +296,7 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // 19 since `setup-mcp-cli.ts`: the terminal half of `reticle setup mcp`, which the one-line
   // installer runs before any project exists. It sits HERE and not in `setup/` because the reach
   // guard refused `command -> setup` and CLI handlers already live in this directory.
-  'server/src/command/cli': 28, // + open-navigate.ts: `open --navigate`, beside adhoc-verdict.ts as review asked; + cloud-link.ts: `reticle link`, split from cloud-cli.ts at its line cap; + known-regression.ts: the gate's read of the platform, off the library path; + try-command.ts, verify-results.ts, cli-usage.ts: commands and their output beside their siblings; a subdirectory gave each a new reach the reach guard refuses; + tutorial.ts: one sequence, two audiences, ending at a verdict; + report-command.ts, a command beside its siblings
+  'server/src/command/cli': 29, // + open-navigate.ts: `open --navigate`, beside adhoc-verdict.ts as review asked; + cloud-link.ts: `reticle link`, split from cloud-cli.ts at its line cap; + known-regression.ts: the gate's read of the platform, off the library path; + try-command.ts, verify-results.ts, cli-usage.ts: commands and their output beside their siblings; a subdirectory gave each a new reach the reach guard refuses; + tutorial.ts: one sequence, two audiences, ending at a verdict; + report-command.ts, a command beside its siblings; + cli-parse-serve.ts: serve/mcp/_daemon flags, split from cli-parse.ts at its line cap
   // 17 since the installer's Node half: `setup-mcp.ts` (which agents are here, and merging into the
   // configs they already keep) and `setup-install.ts` (the three steps only the shell could time).
   // Both are pure — their telemetry reporter is INJECTED, because this directory does not own a
@@ -300,6 +312,9 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // one file that names it.
   // +1: js-coverage.ts, the browser engine's code coverage beside the other driven-page capabilities.
   'server/src/portal/input': 12,
+  // 11 with `pool-lease.ts`: the lease types and the pool's limits, split out of browser-pool.ts at
+  // the 1000-line cap (#1705).
+  'server/src/portal/pool': 11,
   // 22 since `session-verdict-facts.ts` was extracted (the count is source files, not tests): both
   // verdict-producing tools were threading the same session facts into `decideVerified` with the
   // same conditional-spread idiom, and a third fact would have been a third copy. Raised on
@@ -332,7 +347,9 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // `server/src/index.ts` (at its cap) when it gained a progress push per step.
   // 37 with `flow-replayable.ts`: whether a saved flow can replay at all, read by the save, the
   // suite verdict and the suite selection, which all live here.
-  'server/src/language/flows': 37,
+  // +1: flow-start-path.ts, replay's start-page arrival split out of flow-replay-run.ts at the 1000-line cap (#1705).
+  // +1: flow-lease.ts, the leased-context helpers split out of flow-tools.ts at the 1000-line cap (#1705).
+  'server/src/language/flows': 39,
   // 12 since `drive-flow.ts`: the rule that turns a session's ambient tape into a flow per journey,
   // and the gate that refuses to save one asserting nothing. It sits beside `session-end.ts` because
   // teardown is the only caller and the tape is data by then — the reach guard already refused the
@@ -351,7 +368,7 @@ const OVER_THE_LINE: Readonly<Record<string, number>> = {
   // envelope and the report that reads it must key on the identical value — a private copy on one
   // side is how the two would silently disagree, and a lookup that misses every envelope is exactly
   // the defect it was written to fix.
-  'server/src/memory/journal': 15,
+  'server/src/memory/journal': 16,
   // 11 when the artifact-address files landed: `project-for-root.ts`, `artifact-root-resolver.ts`
   // and the roster that pins them. Recorded rather than grouped, and the reason is the sibling
   // guard: the natural home for "which directory does this write to" is `project/dir`, whose whole
@@ -406,8 +423,12 @@ function flatCounts(): Map<string, number> {
   const counts = new Map<string, number>();
   for (const path of tracked) {
     // apps/ are local fixtures, plan/ is gitignored design notes, bench/ is the harness.
-    if (/^(apps|plan|bench)\//.test(path)) continue;
-    if (/\.(test|spec|bench)\.tsx?$/.test(path)) continue;
+    if (/^(apps|plan|bench)\//.test(path)) {
+      continue;
+    }
+    if (/\.(test|spec|bench)\.tsx?$/.test(path)) {
+      continue;
+    }
     const dir = dirname(path);
     counts.set(dir, (counts.get(dir) ?? 0) + 1);
   }
@@ -426,7 +447,9 @@ describe('how much sits loose in one directory', () => {
   it(`records every directory holding more than ${String(FLAT_FILE_LIMIT)} source files`, () => {
     const found: Record<string, number> = {};
     for (const [dir, count] of [...flatCounts()].sort()) {
-      if (count > FLAT_FILE_LIMIT) found[dir] = count;
+      if (count > FLAT_FILE_LIMIT) {
+        found[dir] = count;
+      }
     }
     expect(
       found,

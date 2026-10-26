@@ -415,7 +415,7 @@ describe('presenter HUD shell', { timeout: HUD_MOUNT_TIMEOUT_MS }, () => {
     expect(asked).toBe(1);
     shell.teardown();
   });
-  it('asks a signed-out user to sign in on every page, and shows the promo once signed in', () => {
+  it('asks a signed-out user to sign in from the Agent Log, and shows the promo once signed in', () => {
     document.body.innerHTML = '';
     const shell = new HudShell();
     document.body.innerHTML = `<div data-reticle-overlay>${HudShell.dockHtml('', '', 'data-reticle-log', '', '')}</div>`;
@@ -424,18 +424,19 @@ describe('presenter HUD shell', { timeout: HUD_MOUNT_TIMEOUT_MS }, () => {
     shell.mount(root);
     const signin = (): HTMLElement | null =>
       document.querySelector<HTMLElement>('[data-reticle-rail-signin]');
-    const promo = (): HTMLElement | null =>
-      document.querySelector<HTMLElement>('[data-reticle-rail-promo]');
+    const rail = (): HTMLElement | null =>
+      document.querySelector<HTMLElement>('[data-reticle-rail]');
     shell.paintAccount({ signedIn: false }, undefined);
     expect(signin()?.hidden).toBe(false);
     expect(signin()?.querySelector('[data-reticle-account-signin]')).not.toBeNull();
     expect(signin()?.textContent).toContain('Harness');
     // Signing in is the step: every workspace gets credits. The rail says "try".
     expect(signin()?.textContent).toContain('Sign in to try Reticle Harness');
-    expect(promo()?.hidden).toBe(true);
+    // No card of its own over the app: the rail goes while the ask is in the Agent Log.
+    expect(rail()?.hidden).toBe(true);
     shell.paintAccount({ signedIn: true, org: 'Acme' }, undefined);
     expect(signin()?.hidden).toBe(true);
-    expect(promo()?.hidden).toBe(false);
+    expect(rail()?.hidden).toBe(false);
     shell.teardown();
   });
   it('does not ship a separate flag-a-bug control', () => {
@@ -730,11 +731,12 @@ describe('the activity feed opens at the newest row', () => {
     const p = new Presenter({});
     p.mount();
     p.sessionStart();
-    click(document.querySelector('[data-reticle-fab]'));
+    // The agent's first row opens the chat; the person minimises it, and the rest arrive closed.
+    p.log(LOG_KIND.ACT, 'row 0');
     click(document.querySelector('[data-reticle-chat-min]'));
     const log = document.querySelector<HTMLElement>('[data-reticle-log]');
     if (null === log) throw new Error('no log');
-    for (let i = 0; i < 12; i += 1) p.log(LOG_KIND.ACT, `row ${String(i)}`);
+    for (let i = 1; i < 12; i += 1) p.log(LOG_KIND.ACT, `row ${String(i)}`);
     // jsdom has no layout: model a feed taller than its box, and a scroll position stuck at the top.
     Object.defineProperty(log, 'scrollHeight', { value: 900, configurable: true });
     log.scrollTop = 0;

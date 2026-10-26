@@ -1,5 +1,4 @@
 import type { HarnessConfig } from '@reticlehq/core';
-import type { HarnessGateView } from './presenter-harness-row.js';
 import {
   SETTINGS_ATTR,
   SETTINGS_BTN_ATTR,
@@ -140,10 +139,10 @@ const DEFAULT_SETTINGS: PresenterSettings = {
   showTimestamps: true,
   // ON by default: the chat IS the HUD's content, and shipping it off meant the default experience
   // was a bare toolbar until somebody found the toggle. `expand()` has always opened the chat for
-  // the same reason; this is the other half — session start, with no click at all.
+  // the same reason; this is the other half — the agent's first action, with no click at all.
   //
-  // Safe to default because `openChat()` expands a collapsed HUD, and session start is the one
-  // moment where that is what you want. A user who prefers the bare toolbar turns this off and it
+  // Not at session start: a bridge that answered has nothing to show yet, and the open panel then
+  // covered the app on a fresh install. A user who prefers the bare toolbar turns this off and it
   // stays off: a stored `false` is honoured over the default, which is pinned in
   // presenter-chat-default.test.ts so the product cannot change somebody's answer behind their back.
   autoOpenChat: true,
@@ -230,7 +229,10 @@ function settingsHelpIcon(): string {
 /** Each option's name and the one line under it that says what it does. */
 const SETTING_TEXT = {
   outputDetail: ['Output detail', 'How much a copied run includes.'],
-  autoOpenChat: ['Open the log automatically', 'Opens this panel when a session starts.'],
+  autoOpenChat: [
+    'Open the log automatically',
+    'Opens this panel when an agent starts to act in this tab.',
+  ],
   showTimestamps: ['Show timestamps', 'Shows how long ago each log row happened.'],
   showTally: ['Show pass/fail count', 'A score pill for this session in the toolbar.'],
   reactComponents: ['React component names', 'Adds component names to copied runs.'],
@@ -240,10 +242,7 @@ const SETTING_TEXT = {
   ],
   clearOnCopy: ['Clear notes after copying', 'Starts fresh once your notes are copied.'],
   hideUntilRestart: ['Hide until reload', 'Hides the HUD until this page reloads.'],
-  harnessEnabled: [
-    'Allow Reticle to drive',
-    'Off by default. Unlocks at 80% instrumentation; lets Run Harness test this project.',
-  ],
+  harnessEnabled: ['Allow Reticle to drive', 'Off by default. Lets Run Harness test this project.'],
   reduceMotion: ['Reduce motion', 'Fewer HUD animations.'],
   ambientGlow: ['Page glow', 'Tints the page edges while a session runs.'],
   workspace: ['Workspace', 'The Reticle account this machine is signed in to.'],
@@ -308,12 +307,7 @@ const ACCOUNT_HELP = `Whether this machine is signed in to a Reticle workspace. 
  *   - heard and entitled: a live switch reflecting what the PLATFORM says, not what this panel
  *     remembers. The dashboard writes the same row; whichever surface you used last, both read this.
  */
-export function paintHarnessRow(
-  root: ParentNode,
-  config: HarnessConfig | undefined,
-  /** This tab's coverage gate: below it the switch is locked and the help says why. */
-  gate?: HarnessGateView,
-): void {
+export function paintHarnessRow(root: ParentNode, config: HarnessConfig | undefined): void {
   const row = root.querySelector(`[${SETTINGS_HARNESS_ROW_ATTR}]`);
   if (!(row instanceof HTMLElement)) return;
   if (config === undefined) {
@@ -323,20 +317,17 @@ export function paintHarnessRow(
   row.hidden = false;
   const toggle = row.querySelector(`[${SETTING_KEY_ATTR}="harnessEnabled"]`);
   if (!(toggle instanceof HTMLElement)) return;
-  const locked = gate !== undefined && !gate.unlocked ? gate.reason : undefined;
-  const usable = config.harnessEntitled && locked === undefined;
+  const usable = config.harnessEntitled;
   toggle.setAttribute('aria-checked', config.harnessEnabled && usable ? 'true' : 'false');
   toggle.setAttribute('aria-disabled', usable ? 'false' : 'true');
   const help = row.querySelector('[data-reticle-settings-help]');
   const credits = creditsLeft(config.credits);
   if (help instanceof HTMLElement)
-    help.title =
-      locked ??
-      (usable
-        ? [HARNESS_HELP, credits].filter((t) => 0 < t.length).join(' ')
-        : creditsSpent(config.credits)
-          ? credits
-          : HARNESS_LOCKED_HELP);
+    help.title = usable
+      ? [HARNESS_HELP, credits].filter((t) => 0 < t.length).join(' ')
+      : creditsSpent(config.credits)
+        ? credits
+        : HARNESS_LOCKED_HELP;
 }
 
 /**
@@ -689,10 +680,10 @@ export class PresenterSettingsPanel {
    * Safe before mount and after teardown: the panel simply has no root, and the next snapshot after
    * a mount paints it. The daemon pushes far more often than somebody opens Settings.
    */
-  paintHarness(config: HarnessConfig | undefined, gate?: HarnessGateView): void {
+  paintHarness(config: HarnessConfig | undefined): void {
     const root = this.#panel;
     if (root === undefined) return;
-    paintHarnessRow(root, config, gate);
+    paintHarnessRow(root, config);
   }
 
   teardown(): void {

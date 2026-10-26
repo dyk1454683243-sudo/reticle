@@ -2,6 +2,7 @@
 title: Gates
 description: 'I changed some files. Which command do I run before I push?'
 icon: shield-check
+noindex: true
 ---
 
 If you changed anything at all, run `pnpm verify` (`format:check`, `lint`, `typecheck`, `test:unit`; about two minutes). If you also touched the tool surface, install, desktop or Rust, section 1 below names the one extra command your change needs. CI is path-routed too, and `gate` counts a skipped job as green, so a gate you skip here may also be skipped in CI.
@@ -28,7 +29,7 @@ A ↻ row's COUNT was re-derived; a ↻ row's ✅ is still the August sweep unle
 | ↻ `pnpm test:unit` | ✅ **9,210 tests / 934 files** across 10 packages plus the bench harness | ~70s |
 | `pnpm format:check` | ✅ | ~10s |
 | `pnpm test:integration` | ✅ **14/14**, re-measured 2026-09-11 | 17s |
-| ↻ `pnpm test:e2e` | ✅ **39/39 specs, 334 checks**, re-measured 2026-09-11 | **490s** (Aug) |
+| ↻ `pnpm test:e2e` | ✅ **39/39 specs, 334 checks**, on 2026-09-11. The battery now has 44 specs. This row was not re-run for 3.8.0 | **490s** (Aug) |
 | `pnpm test:e2e:desktop` | ✅ **3/3** (Electron 22, electron-vite 6, Tauri 18), 2026-10-01; includes native headless visibility and idle durability | 58s |
 | `node apps/e2e/soak.mjs --self-check` | ✅ | `<1s` |
 | `node apps/e2e/matrix.mjs --self-check` | ✅ | `<1s` |
@@ -68,7 +69,7 @@ Find the row that matches what you changed. Run its commands. That is the whole 
 | `@reticlehq/electron`, `adapters/realm/tauri`, the IPC observer, desktop capture | ↑ **and** `pnpm test:e2e:desktop` | +~3 min |
 | `open-verification`, the adjudicator, `WebRealm`, or anything a verdict is derived from | ↑ **and** `pnpm gate:conformance` | +~3 min |
 | Session selection, the artifact root, or anything that tells git worktrees apart | ↑ **and** `pnpm gate:worktrees` | +~20s |
-| Telemetry, feedback, or anything that emits an event | ↑ **and** read [`telemetry-contract.md`](./telemetry-contract.md) first. `pnpm test:e2e` covers it (`telemetry-events-test`) | n/a |
+| Telemetry, feedback, or anything that emits an event | ↑ **and** read [`contributing/telemetry/contract.md`](https://github.com/reticlehq/reticle/blob/main/contributing/telemetry/contract.md) first. `pnpm test:e2e` covers it (`telemetry-events-test`) | n/a |
 | `adapters/realm/tauri` (Rust) | ↑ **and** `cd adapters/realm/tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings` | +~2 min |
 | Docs, README, comments only | `pnpm format:check` | seconds |
 
@@ -86,13 +87,13 @@ Which means a gate skipped locally can also be skipped in CI, if what you change
 | `smoke` | product changes on PRs; always in the queue and on main, nightly, and manual runs |
 | `e2e` | a pull request that touches a package or app the battery boots; always in the merge queue and on main. Split into three parallel shards (`E2E_SHARD=k/3`); the integration suite and the soak run in shard 1 |
 | `rust` (Linux) and `rust-macos` | changes to the standalone Cargo tree or CI workflow; full runs nightly and on demand |
-| `install-packages` and `install-gate` | installation paths, CLI setup, build adapters, browser SDK, dependency graph, or gate machinery. A PR runs three Linux scaffolds and vite-react on Windows; the queue runs all thirteen on Linux; nightly/manual runs all thirteen on both OSes. One prepack produces the same tarballs for all cells |
+| `install-packages` and `install-gate` | installation paths, CLI setup, build adapters, browser SDK, dependency graph, or gate machinery. A pull request runs three Linux scaffolds and `vite-react` on Windows. The merge queue, the nightly and a manual run run all thirteen scaffolds on Linux and on Windows. One prepack produces the same tarballs for all cells |
 | the install gate's self-test | gate machinery changes, nightly, and manual runs. `--with-self-test` shares one registry publish across the control and positive phases |
 | `desktop-e2e` | only when desktop code changed |
 | `early-gates` and `break-matrix` | a change to `init/`, `server/src/command/cli/`, `server/src/command/setup/`, `install/` or `break/`; nightly and on demand. The shipped CLI's first-run refusals on Linux, macOS and Windows; the hostile-environment matrix |
 | `launchers` | a change to `install/`; nightly and on demand. Both launchers parse, are pure ASCII, and install the published CLI on Linux, macOS and Windows (PowerShell 5.1 and 7) |
 | `package-quality` | always: publint, are-the-types-wrong and the pack-size budgets for every published package |
-| `bench` | in the merge queue and on a push to main when something that could move the numbers changed, nightly, and on demand. It is ~19 minutes, so it does not run on a pull request; the queue stops a token regression before it reaches `main` |
+| `bench` | in the merge queue and on a push to main when something that could move the numbers changed, nightly, and on demand. It is ~19 minutes, so a pull request runs it only when it changes the tool surface (`server/src/surface/` or `core/src/wire/tool-names.ts`): those changes move the price on every turn, and review needs the number. The queue stops a token regression before it reaches `main` |
 
 ---
 
@@ -116,7 +117,7 @@ Each gate exists because the ones above it are blind to something. That blindnes
 | **Format** | `pnpm format:check` | Prettier | n/a | `format-check` |
 | **JavaScript security audit** | `node scripts/check-js-audit.mjs --self-test && node scripts/check-js-audit.mjs` | critical dependency advisories fail and high ones are printed as warnings without failing; two exact, unpatched development-tool paths are reviewed exceptions documented in [repository settings](https://github.com/reticlehq/reticle/blob/main/.github/REPOSITORY-SETTINGS.md); changed paths, versions, dependency placement, or patch availability fail | vulnerabilities absent from the advisory registry; the reviewed exceptions until patched | `verify` (CI only) |
 | **Integration** | `pnpm test:integration` | real headless Chromium: browser pool, crash isolation, framework adapters, `withReticle` | the MCP surface, the daemon | `e2e` |
-| **Web e2e battery** | `pnpm test:e2e` | **39** specs against 3 booted servers and a real browser (the tool surface, the daemon lifecycle, transport faults, telemetry, trace shape), plus the soak | desktop runtimes; the install | `e2e` |
+| **Web e2e battery** | `pnpm test:e2e` | **44** specs (`ORDER` in `apps/e2e/run.mjs`) against 3 booted servers and a real browser (the tool surface, the daemon lifecycle, transport faults, telemetry, trace shape), plus the soak | desktop runtimes; the install | `e2e` |
 | **Desktop battery** | `pnpm test:e2e:desktop` | two real Electron main processes (plain Vite + electron-vite) and a **packaged** Tauri binary, driven headless | web-only paths | `desktop-e2e` |
 | **Conformance** | `pnpm gate:conformance` | drives the published specification's scenarios against this implementation on a real browser, a real Electron shell AND a command-line subject (`run-self`, `run-desktop`, `run-cli`), scoring every verdict through the spec's own `adjudicate` rather than Reticle's kernel | the seven scenarios no fixture can plant, reported ABSENT, plus the four above the claimed profile, reported `not asked`. All three arms are negatively controlled: `gate:conformance:self-test` PLANTS a subject answering `yes` to every claim and requires the gate to refuse it. Both halves are needed and they catch different things -- the coverage floor catches a suite whose plantable scenarios are FALLING, the plant catches a gate that has gone BLIND. The CLI arm briefly had a `--self-test` that only inspected the run it was handed, which on a healthy tree exits non-zero and would redden CI on a working build; it plants at the client seam now, the way the browser arm does. One scenario still passes under the lie and should: `healthy-app-real-claim` genuinely expects a yes. The lie is injected ABOVE the realm, so a supervisor that spawned nothing is not caught by this control alone | ~3 min; runs in CI as the `conformance` job, path-routed on the protocol, the suite, the realm and the two fixture apps |
 | **Install gate** | `pnpm gate:install` | scaffolds **13** pristine apps across 2 OSes (3 Linux and 1 Windows cell on a pull request; all 26 in the merge queue, nightly, on `main` and on demand), publishes this checkout to a local Verdaccio, lets `init` install itself, boots each app in a real browser, polls for a session that advertised capabilities | install _complexity_; see [`fixtures.md`](./fixtures.md) | `install-gate` |
@@ -149,10 +150,10 @@ These are real and they work; they are not on the PR path, so they only run when
 
 | Command | What it is | When |
 | --- | --- | --- |
-| `pnpm gate:soak:record` | the half-hour release soak (20 rounds, 2s idle), re-records `bench/soak-history.jsonl` and `bench/TOOL-PROFILE.md` | before a release |
+| `pnpm gate:soak:record` | a short recorded soak (20 rounds, 2 s idle). It re-records `bench/soak-history.jsonl` and `bench/TOOL-PROFILE.md`. For the half-hour release soak, run `node apps/e2e/soak.mjs --rounds 60 --idle-ms 30000 --record` | before a release |
 | `pnpm matrix:compat` | drives each MCP client's config exactly the way that client would; writes a machine record for `docs/matrix/` | before a release, per client |
 | `pnpm knip` | unused files, exports, and dependencies | when the repo feels heavy |
-| `node scripts/verify.mjs` in the sibling **`reticle-fixtures`** repo | installs this commit into nine real third-party apps (install _complexity_, not regressions) | see [`fixtures.md`](./fixtures.md) |
+| `node scripts/verify.mjs` in the sibling **`reticle-fixtures`** repo | installs this commit into each real third-party app in its `fixtures.json` (install _complexity_, not regressions) | see [`fixtures.md`](./fixtures.md) |
 
 ---
 
@@ -182,7 +183,7 @@ A directory with a long flat listing is a symptom, not a defect. What says wheth
 So a grouping is an improvement only if that number stays flat. Check before you move:
 
 ```
-node scripts/safe-to-group.mjs server/src/surface/tools query-shape snapshot-delta
+node scripts/safe-to-group.mjs server/src/surface/tools harness-explore harness-hunt harness-gate
 ```
 
 It answers SAFE or UNSAFE by the same rule the test uses: a group is unsafe exactly when some directory it reaches out to also reaches back into it. It is a prediction; the test decides.
@@ -220,11 +221,11 @@ Run it by hand too when you touch the protocol, the adjudicator, or anything a v
 
 ## Path routing
 
-CI path routing lives in [`scripts/ci/changes.mjs`](../scripts/ci/changes.mjs), and its output is written to the `changes` job's step summary. Each changed file is mapped to its nearest workspace package in [`scripts/ci/tier-map.json`](../scripts/ci/tier-map.json), which can add only `e2e` and `windows`; every other tier comes from the regexes in [`scripts/ci/tier-patterns.json`](../scripts/ci/tier-patterns.json). A path that matches no tier and is not docs-only, or a package missing from the map, turns every expensive job on. Any file under `.github/workflows/` or `scripts/ci/` does the same.
+CI path routing lives in [`scripts/ci/changes.mjs`](https://github.com/reticlehq/reticle/blob/main/scripts/ci/changes.mjs), and its output is written to the `changes` job's step summary. Each changed file is mapped to its nearest workspace package in [`scripts/ci/tier-map.json`](https://github.com/reticlehq/reticle/blob/main/scripts/ci/tier-map.json), which can add only `e2e` and `windows`; every other tier comes from the regexes in [`scripts/ci/tier-patterns.json`](https://github.com/reticlehq/reticle/blob/main/scripts/ci/tier-patterns.json). A path that matches no tier and is not docs-only, or a package missing from the map, turns every expensive job on. Any file under `.github/workflows/` or `scripts/ci/` does the same.
 
 ## Flake quarantine
 
-[`.github/flaky.json`](../.github/flaky.json) is the only place a tolerated gap may be named. Each entry needs an issue and an `expires` date. The `flaky-quarantine` job checks the file with [`scripts/ci/flaky-expiry.mjs`](../scripts/ci/flaky-expiry.mjs). An entry with no issue or no expiry always fails it. An expired one fails it on the nightly, a manual run on `main`, and any pull request that edits `flaky.json`; anywhere else it is a warning, so a date alone never reddens an unrelated change. Nothing waits on that job, so an expired entry never stops the nightly from running the jobs it is about. `gate` still requires it.
+[`.github/flaky.json`](https://github.com/reticlehq/reticle/blob/main/.github/flaky.json) is the only place a tolerated gap may be named. Each entry needs an issue and an `expires` date. The `flaky-quarantine` job checks the file with [`scripts/ci/flaky-expiry.mjs`](https://github.com/reticlehq/reticle/blob/main/scripts/ci/flaky-expiry.mjs). An entry with no issue or no expiry always fails it. An expired one fails it on the nightly, a manual run on `main`, and any pull request that edits `flaky.json`; anywhere else it is a warning, so a date alone never reddens an unrelated change. Nothing waits on that job, so an expired entry never stops the nightly from running the jobs it is about. `gate` still requires it.
 
 An entry means one of two things, depending on what it names:
 

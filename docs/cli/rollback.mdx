@@ -24,10 +24,10 @@ Telemetry records the move as a `version_changed` event with `direction: "rollba
 
 ## Exit codes
 
-| Code | Meaning                                                     |
-| ---- | ----------------------------------------------------------- |
-| `0`  | The previous version was reinstalled and the process exited |
-| `1`  | There was nothing to roll back to, or the restore threw     |
+| Code | Meaning |
+| --- | --- |
+| `0` | The previous version was reinstalled and the process exited. Also `0` under `npx`, where nothing is reinstalled: see the warning above |
+| `1` | There was nothing to roll back to, or the restore threw |
 
 ## Worked example
 

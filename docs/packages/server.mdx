@@ -20,13 +20,13 @@ Not into your project. Your agent launches it:
 npx @reticlehq/server mcp
 ```
 
-The `bin` entry is `reticle`, so `npx @reticlehq/server <command>` works once it is on disk.
+The `bin` entry is `reticle`. Run any command as `npx @reticlehq/server <command>`, or as `reticle <command>` after the one-line installer puts the package on your machine.
 
 ## Dependencies
 
 **Runtime:** `@modelcontextprotocol/sdk`, `@reticlehq/browser`, `@reticlehq/core`, `@reticlehq/engine`, `@reticlehq/init`, `open-verification`, `ws`, `zod`, `zod-to-json-schema`.
 
-**Optional:** `playwright` (also a peer dependency, `>=1.50`), `pixelmatch`, `pngjs`. Optional on purpose: Reticle observes the browser you already have. You only need Playwright for the paths that launch or diff one, which is `reticle drive`, `reticle verify`, and visual baselines.
+**Optional:** `playwright` (also a peer dependency, `>=1.50`), `pixelmatch`, `pngjs`. Optional on purpose: Reticle observes the browser you already have. You need Playwright only for the paths that launch or compare a browser: the zero-install lease, `reticle try`, `reticle drive`, `reticle verify` and visual baselines. `reticle open` uses your own browser and does not need it.
 
 ## Exports map
 
@@ -71,7 +71,7 @@ await server.close();
 
 ### `RunningServer`
 
-`bridge: Bridge`, `close(): Promise<void>`, and the optional `realInput`, `verifyPort`, `isIdle()`, `agentAttached()`, `token`, `announceShutdown()`.
+`bridge: Bridge`, `close(): Promise<void>`, and the optional `realInput`, `verifyPort`, `isIdle()`, `agentAttached()`, `token`, `announceShutdown()` and `onShutdownRequest(handler)`. The last one runs `handler` when an authenticated `POST /shutdown` asks the daemon to stop.
 
 ## What else the barrel exports
 

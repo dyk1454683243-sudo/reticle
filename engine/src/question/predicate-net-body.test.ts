@@ -33,6 +33,38 @@ const REFUND = netEvent(10, {
   responseBody: '{"ok":true,"refunded":11.87}',
 });
 
+describe('evalNet — captured SSE bodies (#1848)', () => {
+  it.each([
+    { truncated: false, needle: 'hello', pass: true, unknown: false },
+    { truncated: false, needle: 'goodbye', pass: false, unknown: false },
+    { truncated: true, needle: 'hello', pass: true, unknown: false },
+    { truncated: true, needle: 'goodbye', pass: false, unknown: true },
+  ])('checks $needle with truncated=$truncated', ({ truncated, needle, pass, unknown }) => {
+    const event = netEvent(10, {
+      method: 'POST',
+      url: '/api/chat',
+      status: 200,
+      ok: true,
+      contentType: 'text/event-stream',
+      responseBody: 'data: {"reply":"hello"}\n\n',
+      ...(truncated ? { responseBodyTruncated: true } : {}),
+    });
+    const result = evalNet([event], {
+      kind: PredicateKind.NET,
+      urlContains: '/api/chat',
+      bodyContains: needle,
+    });
+    expect(result.pass).toBe(pass);
+    expect(result.inconclusive !== undefined).toBe(unknown);
+    if (unknown) {
+      expect(result.failureReason).toBeUndefined();
+    }
+    if (!pass && !unknown) {
+      expect(result.failureReason).toBeDefined();
+    }
+  });
+});
+
 describe('evalNet — bodyContains', () => {
   it('fails when the response body does not carry the value the caller declared', () => {
     // The assertion the payments case needed: the server acted on the amount the user asked for.

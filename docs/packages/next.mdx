@@ -70,23 +70,35 @@ An async webpack loader. It skips anything that is not `.jsx`, `.tsx` or a `.js`
 
 ## What it does not do
 
-It does not inject `connect()`. On Next you call it yourself, once, in a client component:
+It does not inject `connect()`. On Next you call it once, in a client component that your root layout renders. `reticle init` writes this component for you at `app/reticle-dev.tsx` (or `src/app/reticle-dev.tsx`). To write it by hand:
 
 ```tsx
 'use client';
 import { useEffect } from 'react';
-import { reticle, install } from '@reticlehq/react';
 
 export function ReticleDev() {
   useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV !== 'development') return;
+    void import('@reticlehq/react').then(({ reticle, install }) => {
       install();
-      reticle.connect();
-    }
+      // withReticle() in next.config sets these. The bridge refuses a connect without the token.
+      const token = process.env.NEXT_PUBLIC_RETICLE_TOKEN;
+      const url = process.env.NEXT_PUBLIC_RETICLE_URL;
+      const root = process.env.NEXT_PUBLIC_RETICLE_ROOT;
+      const sdkVersion = process.env.NEXT_PUBLIC_RETICLE_SDK_VERSION;
+      reticle.connect({
+        ...(url ? { url } : {}),
+        ...(token ? { token } : {}),
+        ...(root ? { root } : {}),
+        ...(sdkVersion ? { sdkVersion } : {}),
+      });
+    });
   }, []);
   return null;
 }
 ```
+
+`NEXT_PUBLIC_RETICLE_TOKEN` is empty when the daemon has not yet written `~/.reticle/pairing-token`. Start the daemon, then restart `next dev`.
 
 <Card title="Framework by framework" icon="layer-group" href="/frameworks">
   What each supported stack needs, and what it gets for free.

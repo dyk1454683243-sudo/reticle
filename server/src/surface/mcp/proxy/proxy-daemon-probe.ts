@@ -7,6 +7,7 @@ import {
   PortPresence,
 } from '@/command/daemon/binding/port-presence.js';
 import { fetchStatus } from '@/command/daemon/binding/daemon-status-probe.js';
+import { isAlive, readPid } from '@/command/daemon/daemon.js';
 
 const DEFAULT_DAEMON_READY_TIMEOUT_MS = 10_000;
 /**
@@ -66,13 +67,17 @@ export function probeDaemon(port: number, host: string = LOOPBACK_HOST): Promise
  *
  * Probes are injected (defaulting to the real pair) so the rule is testable without a socket, which
  * is the same shape `probePresence`'s own callers use.
+ *
+ * `alive` says if the daemon process in the pid file still runs. When it does not, no daemon can
+ * come up, so the wait stops at once and does not poll to the deadline.
  */
 export async function waitForDaemon(
   port: number,
   probes: {
     tcpOpen: (port: number) => Promise<boolean>;
     status: (port: number) => Promise<unknown>;
-  } = { tcpOpen: probeDaemon, status: fetchStatus },
+    alive?: () => boolean;
+  } = { tcpOpen: probeDaemon, status: fetchStatus, alive: () => daemonProcessAlive(port) },
 ): Promise<void> {
   const deadline = Date.now() + DAEMON_READY_TIMEOUT_MS;
   let attempt = 0;
@@ -80,6 +85,12 @@ export async function waitForDaemon(
   while (Date.now() < deadline) {
     presence = await probePresence(port, probes);
     if (presenceIsUsable(presence)) return;
+    if (false === probes.alive?.()) {
+      throw new Error(
+        `the reticle daemon on port ${String(port)} exited before it was ready — ` +
+          describePresence(presence, port),
+      );
+    }
     attempt++;
     await delay(daemonPollDelayMs(attempt));
   }
@@ -90,6 +101,12 @@ export async function waitForDaemon(
     `reticle daemon did not become ready on port ${String(port)} within ` +
       `${String(DAEMON_READY_TIMEOUT_MS)}ms — ${describePresence(presence, port)}`,
   );
+}
+
+/** True while the process in the daemon pid file for `port` runs. */
+export function daemonProcessAlive(port: number): boolean {
+  const pid = readPid(port);
+  return null !== pid && isAlive(pid);
 }
 
 /** How long a spawned daemon gets to bind before `serve`, `restart` or `init` gives up on it. */

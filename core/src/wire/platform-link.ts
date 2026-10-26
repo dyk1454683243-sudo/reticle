@@ -18,7 +18,7 @@
  * Every arrow points out from the daemon: it asks, the platform answers. Nothing listens for the
  * platform on the person's machine.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { HudVisibility } from './constants/hud-use.js';
 
 /** Bumped only for a change an older reader would MISREAD. A new field is not one. */
@@ -128,7 +128,9 @@ export interface SpecIgnored {
 export function parseDriveSpec(raw: unknown): { spec: DriveSpec; ignored: SpecIgnored[] } {
   const ignored: SpecIgnored[] = [];
   const spec: Record<string, unknown> = {};
-  if ('object' !== typeof raw || null === raw || Array.isArray(raw)) return { spec, ignored };
+  if ('object' !== typeof raw || null === raw || Array.isArray(raw)) {
+    return { spec, ignored };
+  }
   for (const [field, value] of Object.entries(raw)) {
     const schema = (SPEC_FIELDS as Record<string, z.ZodTypeAny>)[field];
     if (schema === undefined) {
@@ -136,8 +138,11 @@ export function parseDriveSpec(raw: unknown): { spec: DriveSpec; ignored: SpecIg
       continue;
     }
     const parsed = schema.safeParse(value);
-    if (parsed.success) spec[field] = parsed.data;
-    else ignored.push({ field, reason: SpecIgnoredReason.INVALID });
+    if (parsed.success) {
+      spec[field] = parsed.data;
+    } else {
+      ignored.push({ field, reason: SpecIgnoredReason.INVALID });
+    }
   }
   return { spec, ignored };
 }
@@ -166,6 +171,13 @@ export interface ToolSessionResult {
   result?: unknown;
   error?: string;
   ms: number;
+  /**
+   * When the call started and ended on the daemon's clock (epoch ms). The platform saw only its own
+   * send and the reply, which folds the network and the queue into the tool's time. Optional: an
+   * older daemon does not send them.
+   */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 /** The platform's answer to a session ask: the next calls, or that the drive is over. */
@@ -199,7 +211,7 @@ export const sessionAskRetryable = (status: number): boolean =>
 const SessionCallSchema = z.object({
   seq: z.number().int().nonnegative(),
   tool: z.string().min(1).max(100),
-  args: z.record(z.unknown()).default({}),
+  args: z.record(z.string(), z.unknown()).default({}),
 });
 
 /**
@@ -208,7 +220,9 @@ const SessionCallSchema = z.object({
  * dropped; the platform sees no result for its `seq` and decides what that means.
  */
 export function parseToolSessionReply(raw: unknown): ToolSessionReply {
-  if ('object' !== typeof raw || null === raw) return { calls: [], done: true };
+  if ('object' !== typeof raw || null === raw) {
+    return { calls: [], done: true };
+  }
   const record = raw as { calls?: unknown; done?: unknown };
   const calls = (Array.isArray(record.calls) ? record.calls : [])
     .slice(0, TOOL_SESSION_LIMITS.MAX_BATCH)
@@ -246,11 +260,14 @@ export function parseLinkNotices(raw: unknown): LinkNotice[] {
   const levels = new Set<string>(Object.values(LinkNoticeLevel));
   return (Array.isArray(raw) ? raw : [])
     .flatMap((entry): LinkNotice[] => {
-      if ('object' !== typeof entry || null === entry) return [];
+      if ('object' !== typeof entry || null === entry) {
+        return [];
+      }
       const notice = entry as { level?: unknown; text?: unknown; url?: unknown };
       const text = 'string' === typeof notice.text ? notice.text.trim() : '';
-      if ('string' !== typeof notice.level || !levels.has(notice.level) || 0 === text.length)
+      if ('string' !== typeof notice.level || !levels.has(notice.level) || 0 === text.length) {
         return [];
+      }
       const url =
         'string' === typeof notice.url && /^https?:\/\//i.test(notice.url) ? notice.url : undefined;
       return [

@@ -63,7 +63,9 @@ function callOf(
   return '';
 }
 
-const ZERO_INSTALL_ARGS = `{ action: "acquire", url: "<the running app's URL>" }`;
+// The URL is the one the session list names. A bare "<the running app's URL>" sent a real agent to
+// start a second dev server on a port it chose, beside the user's own.
+const ZERO_INSTALL_ARGS = `{ action: "acquire", url: "<URL>" }`;
 
 /** The zero-install lease, direct where it is advertised, through `reticle_run` where that is. */
 function zeroInstallCall(advertised: ReadonlySet<string>): string {

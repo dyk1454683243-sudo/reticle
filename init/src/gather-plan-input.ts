@@ -68,7 +68,9 @@ const DRY_RUN_PAIRING_TOKEN = 'DRY_RUN_TOKEN_NOT_FOR_USE';
 function craEntryOf(io: InitIo): { path: string; source: string } | null {
   for (const path of CRA_ENTRY_CANDIDATES) {
     const source = io.readFile(path);
-    if (source !== null) return { path, source };
+    if (source !== null) {
+      return { path, source };
+    }
   }
   return null;
 }
@@ -116,7 +118,9 @@ function quoting(
   files: readonly { path: string; source: string }[],
   id: string | undefined,
 ): { path: string; source: string }[] {
-  if (id === undefined) return [];
+  if (id === undefined) {
+    return [];
+  }
   return files.filter((f) => ['"', "'", '`'].some((q) => f.source.includes(`${q}${id}${q}`)));
 }
 
@@ -124,27 +128,47 @@ function readSourceFiles(io: InitIo): { path: string; source: string }[] {
   const out: { path: string; source: string }[] = [];
   const read = (path: string): void => {
     const content = io.readFile(path);
-    if (content !== null) out.push({ path, source: content });
+    if (content !== null) {
+      out.push({ path, source: content });
+    }
   };
   for (const name of io.rootFiles()) {
-    if (out.length >= MAX_SCANNED_FILES) return out;
-    if (SOURCE_FILE.test(name)) read(name);
+    if (out.length >= MAX_SCANNED_FILES) {
+      return out;
+    }
+    if (SOURCE_FILE.test(name)) {
+      read(name);
+    }
   }
   const walk = (dir: string, depth: number): void => {
     for (const name of io.listFiles(dir)) {
-      if (out.length >= MAX_SCANNED_FILES) return;
-      if (SOURCE_FILE.test(name)) read(`${dir}/${name}`);
+      if (out.length >= MAX_SCANNED_FILES) {
+        return;
+      }
+      if (SOURCE_FILE.test(name)) {
+        read(`${dir}/${name}`);
+      }
     }
-    if (depth >= MAX_SCAN_DEPTH) return;
+    if (depth >= MAX_SCAN_DEPTH) {
+      return;
+    }
     for (const sub of io.listDirs(dir)) {
-      if (out.length >= MAX_SCANNED_FILES) return;
-      if (sub.startsWith('.') || NOT_SOURCE_DIRS.has(sub)) continue;
+      if (out.length >= MAX_SCANNED_FILES) {
+        return;
+      }
+      if (sub.startsWith('.') || NOT_SOURCE_DIRS.has(sub)) {
+        continue;
+      }
       walk(`${dir}/${sub}`, depth + 1);
     }
   };
   for (const dir of io.listDirs('.')) {
-    if (out.length >= MAX_SCANNED_FILES) return out;
-    if (dir.startsWith('.') || NOT_SOURCE_DIRS.has(dir)) continue;
+    if (out.length >= MAX_SCANNED_FILES) {
+      return out;
+    }
+    if (dir.startsWith('.') || NOT_SOURCE_DIRS.has(dir)) {
+      continue;
+    }
     walk(dir, 1);
   }
   return out;
@@ -194,7 +218,11 @@ const ASTRO_LAYOUTS_DIR = 'src/layouts';
 const ASTRO_PAGES_DIR = 'src/pages';
 
 function firstPresent(files: ReadonlySet<string>, candidates: readonly string[]): string | null {
-  for (const c of candidates) if (files.has(c)) return c;
+  for (const c of candidates) {
+    if (files.has(c)) {
+      return c;
+    }
+  }
   return null;
 }
 
@@ -204,7 +232,9 @@ function firstReadable(
 ): { path: string; source: string } | null {
   for (const path of candidates) {
     const source = io.readFile(path);
-    if (source !== null) return { path, source };
+    if (source !== null) {
+      return { path, source };
+    }
   }
   return null;
 }
@@ -345,7 +375,9 @@ export function gatherPlanInput(options: InitOptions, io: InitIo, pkg: unknown):
   const cspSources: Record<string, string | undefined> = {};
   for (const file of CSP_FILES) {
     const source = io.readFile(file);
-    if (null !== source) cspSources[file] = source;
+    if (null !== source) {
+      cspSources[file] = source;
+    }
   }
 
   return {
@@ -468,6 +500,10 @@ export function gatherPlanInput(options: InitOptions, io: InitIo, pkg: unknown):
     // Read only to MERGE into: the settings file is the user's, and other tools write in it too.
     claudeSettingsContent: io.readFile(agentFile(CLAUDE_SETTINGS_PATH)),
     ...promptHookInput(io, options, claudeCli, agentFile),
+    ...((): { hookBin?: string } => {
+      const bin = io.host.hookBin?.();
+      return bin === undefined ? {} : { hookBin: bin };
+    })(),
     ...(agentRoot === undefined
       ? {}
       : {

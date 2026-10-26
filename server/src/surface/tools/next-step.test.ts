@@ -81,6 +81,14 @@ describe('what the agent is told to do next', () => {
     expect(verdict(r)).toContain('refused this project');
   });
 
+  // `init` changes the user's files. A bare "Run init" contradicted the consent rule that every
+  // other unwired answer carries.
+  it('asks the user before init when no folder declares the project', () => {
+    const text = NextText.UNMATCHED('/home/me/.reticle/unmatched/origin-1', []);
+    expect(text).toContain('Ask the user before you wire the app');
+    expect(text).not.toMatch(/Run `npx @reticlehq\/server init`/);
+  });
+
   /** A second checkout's evidence went to ~/.reticle/unmatched and the agent was told nothing. */
   it('names where unmatched evidence goes, the folders that claim it, and the fix — once', () => {
     const r = root({ 'request.json': { at: NOW } });
@@ -97,7 +105,7 @@ describe('what the agent is told to do next', () => {
     });
     expect(first).toBe(NextText.UNMATCHED(unmatched.root, unmatched.contenders));
     expect(first).toContain('/code/mono-clone/apps/web');
-    expect(first).toContain('reticle init');
+    expect(first).toContain('npx @reticlehq/server init');
     expect(
       nextStep({ tool: 'reticle_flow_save', verdict: false, root: r, now: NOW, unmatched }),
     ).not.toBe(first);
@@ -150,7 +158,7 @@ describe('what the agent is told to do next', () => {
       '/code/clone',
     );
     expect(said).toContain('/code/mono');
-    expect(said).toContain('cd /code/clone && reticle init --new-id');
+    expect(said).toContain('cd /code/clone && npx @reticlehq/server init --new-id');
   });
 
   it('on a linked project with nothing wrong, says the run syncs on its own', () => {

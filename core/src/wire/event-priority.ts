@@ -19,6 +19,7 @@ export const HIGH_VALUE_EVENT_TYPES: ReadonlySet<string> = new Set([
   EventType.NET_PENDING,
   EventType.NET_STREAM,
   EventType.NET_DETAIL,
+  EventType.NET_RESPONSE_BODY,
   EventType.CONSOLE_ERROR,
   EventType.CONSOLE_WARN,
   EventType.ERROR_UNCAUGHT,

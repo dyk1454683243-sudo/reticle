@@ -10,7 +10,7 @@
  * logic), no `any` (opaque evidence is `z.unknown`), and every domain string is a named constant.
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 import { SubjectRefSchema } from 'open-verification';
 import { PredicateKind } from './consequence.js';
 import { Verified } from './verified-constants.js';
@@ -118,7 +118,9 @@ export function driveFlowStatus(checks: {
   failed: number;
   goalMet?: boolean | undefined;
 }): RunFlowStatus {
-  if (0 < checks.failed) return RunFlowStatus.FAIL;
+  if (0 < checks.failed) {
+    return RunFlowStatus.FAIL;
+  }
   return 0 < checks.held && false !== checks.goalMet ? RunFlowStatus.PASS : RunFlowStatus.SKIPPED;
 }
 
@@ -477,8 +479,8 @@ export const VerificationEvidenceSchema = z.object({
       z.object({
         store: z.string(),
         path: z.string(),
-        expected: z.unknown(),
-        actual: z.unknown(),
+        expected: z.unknown().optional(),
+        actual: z.unknown().optional(),
         ok: z.boolean(),
       }),
     )
@@ -570,6 +572,20 @@ export const ReticleVerificationRunSchema = z.object({
     model: z.string().optional(),
   }),
 
+  /**
+   * The episode that produced this run: `.reticle/episodes/<episodeId>.jsonl` on the machine that
+   * ran it. Joins the run to every tool call the agent made, exactly. Absent when no episode was
+   * written (the journal off, a CI run with no agent).
+   */
+  episodeId: z.string().optional(),
+
+  /**
+   * The coding agent's own session id, as its MCP server announced it (Claude Code's
+   * `CLAUDE_CODE_SESSION_ID`, the `session_id` its hooks receive). Joins the run to the agent
+   * hooks' `agent-<session>.jsonl` exactly, even with two sessions of one agent in a project.
+   */
+  agentSession: z.string().optional(),
+
   trigger: z.object({
     kind: z.nativeEnum(RunTrigger),
     diffRef: z.string().optional(),
@@ -606,7 +622,7 @@ export const ReticleVerificationRunSchema = z.object({
    * schema loads with every page; its shape is `PromptContextSchema` in `@reticlehq/core/artifacts`,
    * which the daemon writes and reads it with.
    */
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
   changedFiles: z.array(RunChangedFileSchema).default([]),
   flows: z.array(RunFlowResultSchema).default([]),
   checks: z.array(RunCheckSchema).default([]),

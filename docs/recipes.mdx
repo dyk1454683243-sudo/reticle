@@ -160,7 +160,7 @@ Reticle refuses controls that look destructive, before acting:
 ```json
 {
   "error": "potentially destructive action blocked; retry with args.confirmDangerous=true",
-  "recovery": "Reticle blocked a potentially destructive control (delete, remove, revoke…) on purpose. If you mean it, retry the same action with args.confirmDangerous set to true. This is a deliberate refusal, not a defect: there is nothing to report."
+  "recovery": "Reticle blocked a control whose label reads as consequential (delete, remove, revoke, pay…) on purpose. If you mean it, send the SAME call again with `args: { confirmDangerous: true }`: it goes inside the `args` object, not beside it. This is a deliberate refusal, not a defect: there is nothing to report."
 }
 ```
 
@@ -171,9 +171,10 @@ Confirm it explicitly when you mean it:
 ```
 
 <Note>
-  The matcher is conservative and will occasionally stop something harmless. A button labelled "New
-  deploy" trips it. That is the trade: a false stop costs you one argument, and a false start costs
-  you a deleted record.
+  The matcher reads the control's label. It stops a control whose words destroy something (delete,
+  remove, revoke, reset…) or move money (pay, buy, transfer, refund…). It can stop a harmless
+  control that uses one of those words, for example "Remove filter". That is the trade: a false stop
+  costs you one argument, and a false start costs you a deleted record.
 </Note>
 
 ## "Did my change break anything else?"
@@ -223,9 +224,9 @@ Most error states have never run. Force one:
 Then drive the flow and assert the error UI appears. Pass `clear: true` to turn mocking off.
 
 <Warning>
-This one needs a **Reticle-driven browser**, because mocks are applied through CDP and the always-on
-SDK cannot do that. A pooled lease is **not** enough. Re-verified on 2026-08-16: calling it against a
-tab from `reticle_lease` returns
+This one needs a browser that Reticle controls: a leased tab (`reticle_lease`) or a driven browser
+(`reticle drive <url>`, or `RETICLE_CDP_URL`). Mocks go through CDP, and the always-on SDK in your
+own tab cannot apply them. Against your own tab the call returns
 
 ```json
 {
@@ -237,7 +238,7 @@ tab from `reticle_lease` returns
 }
 ```
 
-Under a driven browser the same call answers `{ "applied": true, "count": 1 }`. The same rule applies to `reticle_screenshot`, `reticle_visual_diff` and `reticle_viewport`, which report `no-visual-provider` instead.
+On a lease or a driven browser the same call answers `{ "applied": true, "count": 1 }`. `reticle_viewport` follows the same rule and also reports `no-cdp-provider` against your own tab. `reticle_screenshot` and `reticle_visual_diff` also work on a lease or a driven browser, and report `no-visual-provider` against your own tab.
 
 </Warning>
 

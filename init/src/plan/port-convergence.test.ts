@@ -200,8 +200,10 @@ describe('the static page and the Angular entry move with --port too', () => {
 
   it('moves a snippet in index.html under a package.json with no UI library', () => {
     const html =
-      withStaticSnippet(PAGE, `{ url: 'ws://localhost:${String(OLD)}/reticle', projectId: 'demo' }`) ??
-      '';
+      withStaticSnippet(
+        PAGE,
+        `{ url: 'ws://localhost:${String(OLD)}/reticle', projectId: 'demo' }`,
+      ) ?? '';
     const steps = plan(Framework.HTML, NEW, { htmlIndexSource: html }).steps;
     const index = step(steps, 'index.html');
     expect(index?.status).toBe(StepStatus.APPLY);

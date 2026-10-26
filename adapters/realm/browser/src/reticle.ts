@@ -1,4 +1,6 @@
 import { setPresenterViewer, setPresenterVisible } from './dom/dom-ignore.js';
+import { trackBusy } from './busy.js';
+import { declareRoutes } from './observers/route.js';
 import { setOutwardPolicy } from './actions/danger-context.js';
 import { coverageMarkers, notApplicableFor } from './dom/addressing/coverage-markers.js';
 import {
@@ -54,6 +56,8 @@ import {
 import { installAllObservers, runTeardowns } from './observers/install-all.js';
 import { setTestIdAttr } from './dom/addressing/testid-attr.js';
 import { setNetworkBodyMaxChars } from './observers/net-detail/network-body.js';
+import { pageHref } from './security/page-location.js';
+import { scrubKnownSecrets } from './security/serialization.js';
 import { installOverlay, type OverlayHandle } from './presenter/chrome/overlay.js';
 // TYPES only. Naming the panel's class here would put the whole panel in the first thing a page
 // downloads, and the panel is wanted only once an agent connects. It is fetched below instead, at
@@ -73,23 +77,16 @@ import { nativeWarn } from './timers/console/native-console.js';
 import { installRecorder, type RecorderHandle } from './recorder/recorder.js';
 import { Annotator } from './review/annotator.js';
 import type { Teardown } from './observers/types.js';
-import type { ReticleConnectOptions } from './connect-options.js';
+import {
+  helloMode,
+  leaseToken,
+  shouldBlockProduction,
+  type ReticleConnectOptions,
+} from './connect-options.js';
+export { helloMode, shouldBlockProduction } from './connect-options.js';
 
 // Re-exported so every existing importer of the options type is unaffected by the file split.
 export type { ReticleConnectOptions };
-
-/**
- * Runtime backstop for the dev-only SDK: block connecting when the build reports production, unless
- * explicitly overridden. Pure so it's testable; connect reads NODE_ENV safely (process may be absent
- * in a raw browser). This is defense-in-depth - the primary guard is the consumer gating the import
- * behind `import.meta.env.DEV` so the SDK is dead-code-eliminated from prod bundles entirely.
- */
-export function shouldBlockProduction(
-  nodeEnv: string | undefined,
-  allowInProduction: boolean,
-): boolean {
-  return 'production' === nodeEnv && !allowInProduction;
-}
 
 /**
  * The daemon only upgrades WebSocket connections on `RETICLE_WS_PATH`, so a hand-written bridge URL
@@ -334,6 +331,7 @@ export class Reticle {
   #annotator: Annotator | undefined;
   #eventCount = 0;
   #token: string | undefined;
+  #mode: ReturnType<typeof helloMode> = {};
   #sdkVersion: string | undefined;
   /** Whether this page records network bodies — announced in HELLO so a body clause can be refused
    * before an action is spent on it. See messages.ts. */
@@ -348,6 +346,12 @@ export class Reticle {
 
   connect(options: ReticleConnectOptions = {}): void {
     if (this.#connected) {
+      // A lease replaces a token the bridge may have refused, and dials again. See `leaseToken`.
+      const leased = leaseToken(options, this.#token);
+      if (leased !== undefined) {
+        this.#token = leased;
+        this.#transport?.redialAfterRefusal();
+      }
       this.#adoptLateProjectId(options);
       return;
     }
@@ -421,6 +425,7 @@ export class Reticle {
     this.#token =
       options.token !== undefined && options.token.length > 0 ? options.token : undefined;
     this.#projectId = identity.projectId;
+    this.#mode = helloMode(options);
     // Install the redaction rule BEFORE anything can emit. Every observer, the serializer and the
     // snapshot path read it ambiently, so a policy set even one line after installAllObservers would
     // leave the first events of the session redacted by a different rule than the rest.
@@ -671,8 +676,20 @@ export class Reticle {
   }
 
   /** Surface an arbitrary app-domain observation the DOM can't express. */
+  /** Declare the app's route patterns (`/runs/:id`, `*` for the rest): each route change names its screen. */
+  routes(patterns: readonly string[]): void {
+    declareRoutes(patterns);
+  }
+
   signal(name: string, data: Record<string, unknown> = {}): void {
     this.#emit(EventType.SIGNAL, { name, data });
+  }
+
+  /** Work only the app can see (a debounced save, a worker): a settle waits for it. Returns `work`. */
+  busy<T>(work: Promise<T>): Promise<T> {
+    return trackBusy(work, (name, data) => {
+      this.signal(name, data);
+    });
   }
 
   /** Report a framework/store state change the agent can observe and assert on. */
@@ -790,10 +807,11 @@ export class Reticle {
       protocolVersion: RETICLE_PROTOCOL_VERSION,
       sessionId: this.#session,
       ...(this.#projectId === undefined ? {} : { projectId: this.#projectId }),
-      url: location.href,
-      title: document.title,
+      url: pageHref(),
+      title: scrubKnownSecrets(document.title),
       adapters: adapterNames(),
       ...(this.#token === undefined ? {} : { token: this.#token }),
+      ...this.#mode,
       hasCapabilities: hasCapabilities(),
       // The protocol's first assertion. A claim reading a channel absent from this list is `unknown`
       // BEFORE an action is spent on it rather than after -- and "nothing was watching" stops reading

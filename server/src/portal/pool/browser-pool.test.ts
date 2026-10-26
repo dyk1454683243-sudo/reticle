@@ -148,7 +148,9 @@ function fakeLauncher(opts: { failNav?: boolean } = {}): {
   const browsers: FakeBrowser[] = [];
   const launch: Launcher = () => {
     const b = new FakeBrowser();
-    if (true === opts.failNav) b.failNav = true;
+    if (true === opts.failNav) {
+      b.failNav = true;
+    }
     browsers.push(b);
     return Promise.resolve(b);
   };
@@ -197,7 +199,9 @@ describe('BrowserPool', () => {
     });
     const lease = await pool.acquire('http://localhost:3000/icon.svg');
     const page = browsers[0]?.contexts[0]?.pages[0];
-    if (page !== undefined) page.evaluateResult = READER_NOT_HTML;
+    if (page !== undefined) {
+      page.evaluateResult = READER_NOT_HTML;
+    }
     await expect(lease.injectReader?.()).rejects.toBeInstanceOf(NotHtmlDocumentError);
   });
 
@@ -215,7 +219,9 @@ describe('BrowserPool', () => {
     const pool = new BrowserPool(launch, { maxContexts: 4, genSessionId: counterIds() });
     const lease = await pool.acquire('http://localhost:3000/');
     const page = browsers[0]?.contexts[0]?.pages[0];
-    if (page === undefined) throw new Error('no page');
+    if (page === undefined) {
+      throw new Error('no page');
+    }
     page.evaluateResult = 'loading';
     expect(await lease.isLoading?.()).toBe(true);
     page.evaluateResult = 'interactive';
@@ -230,6 +236,24 @@ describe('BrowserPool', () => {
       'document.readyState',
       'document.readyState',
     ]);
+  });
+
+  // #1705: replay asks by session id, which may be the app's own name for the lease.
+  it('answers whether a lease is loading by its id or its alias, and false for a non-lease', async () => {
+    const { launch, browsers } = fakeLauncher();
+    const pool = new BrowserPool(launch, { maxContexts: 4, genSessionId: counterIds() });
+    const lease = await pool.acquire('http://localhost:3000/');
+    pool.alias('app-named', lease.sessionId);
+    const page = browsers[0]?.contexts[0]?.pages[0];
+    if (page === undefined) {
+      throw new Error('no page');
+    }
+    page.evaluateResult = 'loading';
+    expect(await pool.leaseLoading(lease.sessionId)).toBe(true);
+    expect(await pool.leaseLoading('app-named')).toBe(true);
+    page.evaluateResult = 'complete';
+    expect(await pool.leaseLoading('app-named')).toBe(false);
+    expect(await pool.leaseLoading('not-a-lease')).toBe(false);
   });
 
   it('reuses one browser across many leases; each context is isolated', async () => {
@@ -422,7 +446,9 @@ describe('BrowserPool', () => {
           const p = await realNewPage();
           const realGoto = p.goto.bind(p);
           p.goto = (url: string): Promise<unknown> => {
-            if (crashDuringGoto) b.crash(); // the browser dies while we "navigate"
+            if (crashDuringGoto) {
+              b.crash();
+            } // the browser dies while we "navigate"
             return realGoto(url);
           };
           return p;
@@ -471,6 +497,27 @@ describe('BrowserPool', () => {
     clock += 2;
     expect(await pool.sweepExpired()).toEqual([gone.sessionId]);
     expect(pool.leasedSessionIds().sort()).toEqual([back.sessionId, other.sessionId].sort());
+  });
+
+  // A proxy that reconnects keeps its id, so it is the SAME owner coming back. Its leases must not
+  // close under it: the grace exists for an owner that is gone, and this one is not.
+  it('keeps the leases of an owner that reattached within the grace', async () => {
+    const { launch } = fakeLauncher();
+    let clock = 1000;
+    const pool = new BrowserPool(launch, {
+      maxContexts: 4,
+      genSessionId: counterIds(),
+      now: () => clock,
+      leaseTtlMs: 300_000,
+    });
+    const lease = await pool.acquire('http://localhost:3000/a', { owner: 'agent-1' });
+
+    pool.detachOwner('agent-1');
+    pool.reattachOwner('agent-1');
+    clock += ORPHANED_LEASE_GRACE_MS + 1;
+
+    expect(await pool.sweepExpired()).toEqual([]);
+    expect(pool.heldBy(lease.sessionId, 'agent-1')).toBe(true);
   });
 
   // An idle Chromium held about 90MB, plus its helpers, until the daemon itself went idle.
@@ -682,11 +729,15 @@ describe('BrowserPool', () => {
     await pool.acquire('http://localhost:3000/ok'); // launches the browser, succeeds
 
     const browser = browsers[0];
-    if (browser !== undefined) browser.failNav = true;
+    if (browser !== undefined) {
+      browser.failNav = true;
+    }
     await expect(pool.acquire('http://localhost:3000/hangs')).rejects.toThrow('nav timeout');
     expect(pool.activeCount()).toBe(1); // the good lease is untouched; the bad one didn't leak a slot
 
-    if (browser !== undefined) browser.failNav = false;
+    if (browser !== undefined) {
+      browser.failNav = false;
+    }
     const ok = await pool.acquire('http://localhost:3000/ok2'); // the freed slot is reusable
     expect(ok.sessionId).toBeDefined();
     expect(pool.activeCount()).toBe(2);
@@ -700,7 +751,9 @@ describe('BrowserPool', () => {
       const realNew = b.newContext.bind(b);
       b.newContext = (): Promise<PooledContext> => {
         calls += 1;
-        if (1 === calls) return Promise.reject(new Error('context boom'));
+        if (1 === calls) {
+          return Promise.reject(new Error('context boom'));
+        }
         return realNew();
       };
       return Promise.resolve(b);

@@ -4,9 +4,9 @@ description: 'The moving parts, the data flow between them, and the design decis
 icon: sitemap
 ---
 
-Reticle has three moving parts: a dev-only **SDK** inside your page that instruments the DOM, network, console, routing and framework state; a local **server** that runs a WebSocket bridge to that SDK and an MCP server for your agent; and a git-checked **`.reticle/` workspace** holding flows, baselines and run artifacts. Your agent calls an MCP tool, the server turns it into a command over the WebSocket, the SDK runs it in the real page and streams structured events back.
+Reticle has three moving parts: a development **SDK** inside your page that instruments the DOM, network, console, routing and framework state; a local **server** that runs a WebSocket bridge to that SDK and an MCP server for your agent; and a git-checked **`.reticle/` workspace** holding flows, baselines and run artifacts. Your agent calls an MCP tool, the server turns it into a command over the WebSocket, the SDK runs it in the real page and streams structured events back.
 
-> For engineers evaluating Reticle, integrating it at scale, or contributing. It explains the moving parts, the data flow, and the design decisions behind them. If you just want to get running, start with [getting-started.md](getting-started.md); come back here when you want to know _why_.
+> For engineers evaluating Reticle, integrating it at scale, or contributing. It explains the moving parts, the data flow, and the design decisions behind them. If you just want to get running, start with [Getting started](/getting-started); come back here when you want to know _why_.
 
 ---
 
@@ -38,6 +38,9 @@ Reticle is a pnpm + Turborepo monorepo. The split is not cosmetic: each boundary
 | Package | Runs in | Responsibility | Hard rule |
 | --- | --- | --- | --- |
 | `@reticlehq/core` | both | The **wire contract**: every constant + zod schema crossing any boundary | Depends only on `zod` and `open-verification` |
+| `open-verification` | both | The Open Verification Protocol: vocabulary, rules, `adjudicate()` | Depends only on `zod` |
+| `@reticlehq/engine` | Node | The rules that decide a verdict | No browser, no daemon, no CLI |
+| `@reticlehq/init` | Node (build time) | `reticle init`: writes files and runs the package manager | Never opens a socket |
 | `@reticlehq/browser` | the browser | Instrument the page; execute commands; emit events | Never imports Node APIs |
 | `@reticlehq/server` | Node | The bridge, the MCP server, the `reticle` CLI, flow/run storage | Never imports DOM APIs |
 | `@reticlehq/react` | the browser | The SDK **kit** you install in a browser app: re-exports the browser sensor (so one install gives both `reticle` and `install`) and maps a DOM node → React component → source `file:line` | Core works without the source-mapping half |
@@ -79,15 +82,15 @@ Reticle is honest about which tier a given assertion used, so "green" carries it
 
 ### 2. Structured reads, not screenshots
 
-A screenshot is ~1,365 image tokens per look, slow, non-deterministic, and **blind to everything non-visual**: the failed request, the console error, the route that didn't change. Reticle reads the accessibility tree, the network log, the console, and framework state as compact structured data. That's an order of magnitude cheaper _and_ it sees the bugs pixels can't. See [benchmarks.md](benchmarks.md) for the measured comparison.
+A screenshot is ~1,365 image tokens per look, slow, non-deterministic, and **blind to everything non-visual**: the failed request, the console error, the route that didn't change. Reticle reads the accessibility tree, the network log, the console, and framework state as compact structured data. That's an order of magnitude cheaper _and_ it sees the bugs pixels can't. See [Benchmarks](/benchmarks) for the measured comparison.
 
 ### 3. Record once, replay deterministically
 
 The same verification runs over and over, every commit, every CI run. Reticle records a **flow** once, then replays it with **no AI model**: it re-resolves each element's durable anchor against the live DOM and re-asserts the declared consequence. A CI gate diffs the verdict exactly, at ~0% flake, for a couple hundred tokens, versus an agent re-driving the whole flow with the model every time. Self- healing rebinds a drifted anchor **only if the consequence still fires**, so it never "heals to the wrong element and ships the regression."
 
-### 4. Dev-only, localhost-only, your app data stays local
+### 4. Development by default, your app data stays local
 
-The SDK is tree-shaken out of production builds and connects only to a local bridge. The bridge binds to loopback by default; exposing it beyond localhost _requires_ a pairing token (and the server refuses to start on a non-loopback host unless `RETICLE_ALLOWED_ORIGINS` names the app's origins). Every environment variable that gates a security control is a single named constant, so a typo can't silently disable auth. Nothing from the app under test leaves your machine unless you link a project: no DOM, network, console, state, or source. What a linked project syncs is set by `reticle config`; see [what is recorded](what-is-recorded.md). The CLI reports anonymous, opt-out usage metrics only (a random id + event names like `cli_command_run`/`daemon_started`; no code, no PII; see [telemetry](telemetry.md)); opt out with `reticle telemetry disable`, `RETICLE_TELEMETRY=0`, or `DO_NOT_TRACK=1`. The one thing that carries free text is feedback you or your agent deliberately send (`reticle feedback` / `reticle_session { action: "feedback" }`). It is never collected passively, it is redacted before sending, and it is disabled separately with `RETICLE_FEEDBACK=0`.
+By default the SDK is tree-shaken out of production builds and connects only to a local bridge. [Production mode](/production-mode) is the one exception: it is opt-in, and a page loads the SDK only with a signed, single-use activation ticket. The bridge binds to loopback by default. It refuses a connect without the pairing token, also on localhost. Exposing it beyond localhost also needs the token (and the server refuses to start on a non-loopback host unless `RETICLE_ALLOWED_ORIGINS` names the app's origins). Every environment variable that gates a security control is a single named constant, so a typo can't silently disable auth. Nothing from the app under test leaves your machine unless you link a project: no DOM, network, console, state, or source. What a linked project syncs is set by `reticle config`; see [what is recorded](/what-is-recorded). The CLI reports anonymous, opt-out usage metrics only (a random id + event names like `cli_command_run`/`daemon_started`; no code, no PII; see [telemetry](/telemetry)); opt out with `reticle telemetry disable`, `RETICLE_TELEMETRY=0`, or `DO_NOT_TRACK=1`. The one thing that carries free text is feedback you or your agent deliberately send (`reticle feedback` / `reticle_session { action: "feedback" }`). It is never collected passively, it is redacted before sending, and it is disabled separately with `RETICLE_FEEDBACK=0`.
 
 ---
 
@@ -107,7 +110,7 @@ This is plain, reviewable, version-controllable data, not a black box.
 ## Running at scale (multiple apps, multiple projects)
 
 - **Multiple apps / tabs on one bridge:** fine. Each connection has a unique `SESSION_AUTO` id; a tool call targets the focused/most-recent session, or you pass an explicit `sessionId`.
-- **Multiple isolated projects:** give each project its own bridge port via `RETICLE_PORT` (set it in the MCP config and dial the same port from the app). A port already in use fails fast with a clear error rather than hanging. See [getting-started.md → Running multiple apps](getting-started.md#running-multiple-apps-at-once).
+- **Multiple isolated projects:** give each project its own bridge port via `RETICLE_PORT` (set it in the MCP config and dial the same port from the app). A port already in use fails fast with a clear error rather than hanging. See [Getting started → Running multiple apps at once](/getting-started#running-multiple-apps-at-once).
 - **CI / no MCP:** `reticle verify <url>` replays the saved flows headlessly and exits non-zero on failure. It writes the same verdict artifact the MCP path produces, with no agent in the loop.
 
 ---
@@ -125,7 +128,7 @@ See [LICENSE](https://github.com/reticlehq/reticle/blob/main/LICENSE) and each p
 
 ## Where to go next
 
-- [getting-started.md](getting-started.md) wires Reticle into your app in a couple of minutes.
-- [benchmarks.md](benchmarks.md) covers how we measure, and the honest results vs the alternatives.
-- [usage.md](usage.md) is the full tool reference and advanced modes.
+- [Getting started](/getting-started) wires Reticle into your app in a couple of minutes.
+- [Benchmarks](/benchmarks) covers how we measure, and the honest results against the alternatives.
+- [Usage](/usage) is the full tool reference and advanced modes.
 - [CONTRIBUTING.md](https://github.com/reticlehq/reticle/blob/main/CONTRIBUTING.md) has the development loop and the rules.

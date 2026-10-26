@@ -81,3 +81,25 @@ export function authFailureReason(
   if (helloToken === undefined || 0 === helloToken.length) return NO_TOKEN;
   return Buffer.byteLength(WRONG_TOKEN, 'utf8') <= MAX_REASON_BYTES ? WRONG_TOKEN : PLAIN;
 }
+
+/**
+ * A dial turned away at the ORIGIN gate, in words the reader can act on.
+ *
+ * This is the refusal that used to leave no trace anywhere. It happens before any HELLO, so it
+ * produced no `noteClosure`, no `session_disconnected`, nothing but an `origin_rejected` log line —
+ * and the daemon log is the file nobody opens until they have already lost the afternoon. Reported
+ * from a multi-tenant app resolving its tenant from the `Host` header: on a hosts-file alias every
+ * dial was refused here, `doctor` reported every check green, and the lease hint blamed the port.
+ *
+ * The origin is IN the message because it is the fix: it is either the alias to allow-list, or the
+ * proof that the page is not being served from where the developer thinks it is.
+ */
+export function originRejectedReason(origin: string | undefined): string {
+  const named = origin === undefined || 0 === origin.length ? 'a page sending no Origin' : origin;
+  return (
+    `a browser dialled this daemon and was REFUSED at the origin gate: ${named} is not allowed. ` +
+    'Off localhost the SDK needs BOTH `allowNonLocalhost: true` AND a pairing token, and the ' +
+    'daemon needs that origin allow-listed (RETICLE_ALLOWED_ORIGINS). The app is running and ' +
+    'instrumented — it was turned away, so do not go looking for a stopped dev server.'
+  );
+}

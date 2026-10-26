@@ -64,7 +64,8 @@ export function stopHookStep(path: string, existing: string | null | undefined):
     title: TITLE,
     target: path,
     status: StepStatus.APPLY,
-    detail: 'print one line when the agent stops without a claim that held; blocks only while its Harness drive runs',
+    detail:
+      'print one line when the agent stops without a claim that held; blocks only while its Harness drive runs',
     write: { path, content: `${JSON.stringify(merged, null, 2)}\n`, expect: [STOP_HOOK_COMMAND] },
   };
 }
@@ -131,7 +132,7 @@ export function compactHookStep(path: string, existing: string | null | undefine
 export function claudeSettingsSteps(
   path: string,
   existing: string | null | undefined,
-  options: { stop: boolean; compact: boolean; prompt?: boolean },
+  options: { stop: boolean; compact: boolean; prompt?: boolean; bin?: string | undefined },
 ): Step[] {
   const steps: Step[] = [];
   let current = existing;
@@ -146,33 +147,51 @@ export function claudeSettingsSteps(
     current = compact.write?.content ?? current;
   }
   const claude = PROMPT_HOOK_AGENTS.find((agent) => PromptHookAgent.CLAUDE_CODE === agent.id);
-  if (true === options.prompt && claude !== undefined)
-    steps.push(promptHookStep({ spec: claude, path, existing: current ?? null }));
+  if (true === options.prompt && claude !== undefined) {
+    steps.push(
+      promptHookStep({
+        spec: claude,
+        path,
+        existing: current ?? null,
+        ...(options.bin === undefined ? {} : { bin: options.bin }),
+      }),
+    );
+  }
   return steps;
 }
 
 /**
  * The prompt-capture hook, for each agent found. On by default, because the request is what a
  * verdict is checked against and an agent forgets to relay it. `--no-prompt-capture` skips it;
- * `"promptCapture": false` in `.reticle.json` keeps the hook from writing; `reticle hook uninstall`
+ * `"promptCapture": false` in `.reticle.json` keeps every agent hook from writing; `reticle hook uninstall`
  * removes exactly what this added.
  */
 const PROMPT_TITLE = 'Prompt capture';
 const NOTICE_TARGET = '.reticle/request.json';
 
-/** The consent line. Names where prompts go and every way to switch it off. */
+/**
+ * The consent line. Names all that the agent hooks keep, what leaves with a linked run and under
+ * which setting, and the one switch that stops all of it.
+ */
 export const PROMPT_CAPTURE_NOTICE =
-  'Each prompt you send is saved, with secrets removed, to .reticle/ in this project. ' +
-  'While you are signed in and the project is linked, it syncs with its runs to your own workspace. ' +
-  'Turn off: --no-prompt-capture, "promptCapture": false in .reticle.json, or `reticle hook uninstall`. ' +
-  'Stop background sync: "backgroundSync": false in .reticle.json, or RETICLE_BACKGROUND_SYNC=0.';
+  'Reticle keeps these in .reticle/ in this project, with secrets removed: each prompt you send, the tool calls your agent makes (commands, file edits, web calls), its model, and its closing message for each turn. ' +
+  'Tool calls stay on this machine. ' +
+  'When the project is linked (reticle connect, or RETICLE_API_KEY in the environment), each synced run sends the model to your own workspace. ' +
+  'Your prompts and the closing messages also go there with the runs, and to the Harness, unless "shareRequests": false is in .reticle.json. ' +
+  'Stop all of it: "promptCapture": false in .reticle.json, or RETICLE_PROMPT_CAPTURE=0 on this machine.';
 
 export function promptHookStep(target: PromptHookTarget): Step {
-  const { spec, path, existing } = target;
+  const { spec, path, existing, bin } = target;
   const title = `${PROMPT_TITLE}: ${spec.label}`;
-  const merged = installPromptHook(spec, existing);
+  const merged = installPromptHook(spec, existing, bin);
+  const then = spec.activation === undefined ? '' : `. ${spec.activation}`;
   if (PromptHookStatus.ALREADY === merged.status) {
-    return { title, target: path, status: StepStatus.ALREADY, detail: 'hook already installed' };
+    return {
+      title,
+      target: path,
+      status: StepStatus.ALREADY,
+      detail: `hook already installed${then}`,
+    };
   }
   if (PromptHookStatus.MANUAL === merged.status) {
     return {
@@ -186,17 +205,30 @@ export function promptHookStep(target: PromptHookTarget): Step {
     title,
     target: path,
     status: StepStatus.APPLY,
-    detail: 'save each prompt to .reticle/ before the agent reads it; never blocks the prompt',
+    detail: `save each prompt, tool call, model and closing message to .reticle/; never blocks the agent${then}`,
     write: { path, content: merged.content, expect: [promptHookCommand(spec.id)] },
   };
 }
 
 /** The steps for every detected agent, then the one consent line when any hook is in place. */
-export function promptHookSteps(targets: readonly PromptHookTarget[], claude: boolean): Step[] {
-  const steps = targets.map(promptHookStep);
-  if (0 === steps.length && !claude) return steps;
+export function promptHookSteps(
+  targets: readonly PromptHookTarget[],
+  claude: boolean,
+  bin?: string,
+): Step[] {
+  const steps = targets.map((target) =>
+    promptHookStep(bin === undefined ? target : { ...target, bin }),
+  );
+  if (0 === steps.length && !claude) {
+    return steps;
+  }
   return [
     ...steps,
-    { title: PROMPT_TITLE, target: NOTICE_TARGET, status: StepStatus.NOTICE, detail: PROMPT_CAPTURE_NOTICE },
+    {
+      title: PROMPT_TITLE,
+      target: NOTICE_TARGET,
+      status: StepStatus.NOTICE,
+      detail: PROMPT_CAPTURE_NOTICE,
+    },
   ];
 }

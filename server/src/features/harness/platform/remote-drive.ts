@@ -178,9 +178,13 @@ export function startRemoteDrives(deps: RemoteDriveDeps): RemoteDrives {
   let stopped = false;
 
   const tick = async (told?: { url: string; apiKey: string }): Promise<void> => {
-    if (busy || stopped || (undefined === told && !deps.connected())) return;
+    if (busy || stopped || (undefined === told && !deps.connected())) {
+      return;
+    }
     const platform = told ?? serverOptionsFromEnv(await deps.env());
-    if (platform === undefined) return;
+    if (platform === undefined) {
+      return;
+    }
     const headers = {
       'content-type': 'application/json',
       authorization: `Bearer ${platform.apiKey}`,
@@ -192,7 +196,9 @@ export function startRemoteDrives(deps: RemoteDriveDeps): RemoteDrives {
         headers,
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        return;
+      }
       const drive = (
         (await res.json()) as {
           drive?: {
@@ -205,8 +211,12 @@ export function startRemoteDrives(deps: RemoteDriveDeps): RemoteDrives {
           } | null;
         }
       ).drive;
-      if (null === drive || undefined === drive) return;
-      if ('string' !== typeof drive.id || 'string' !== typeof drive.goal) return;
+      if (null === drive || undefined === drive) {
+        return;
+      }
+      if ('string' !== typeof drive.id || 'string' !== typeof drive.goal) {
+        return;
+      }
       deps.log?.(`reticle: driving a request from the platform chat: ${drive.goal}`);
       const driveId = drive.id;
       const driveUrl = `${platform.url}${LinkPath.driveResult(driveId)}`;
@@ -355,20 +365,42 @@ async function runToolSession(
     };
     const res = await askWithRetries(() => post(body), sleep);
     // Refused, or still failing after every retry: stop. The platform ends a drive that stops asking.
-    if (res === undefined || !res.ok) return;
+    if (res === undefined || !res.ok) {
+      return;
+    }
     const reply = parseToolSessionReply(await res.json());
-    if (reply.done) return;
+    if (reply.done) {
+      return;
+    }
     results = [];
     for (const call of reply.calls) {
-      if (made >= TOOL_SESSION_LIMITS.MAX_CALLS) return;
+      if (made >= TOOL_SESSION_LIMITS.MAX_CALLS) {
+        return;
+      }
       made += 1;
       const at = now();
       try {
         const result = await tools.invoke(call.tool, call.args);
-        results.push({ seq: call.seq, ok: true, result, ms: now() - at });
+        const end = now();
+        results.push({
+          seq: call.seq,
+          ok: true,
+          result,
+          ms: end - at,
+          startedAt: at,
+          endedAt: end,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        results.push({ seq: call.seq, ok: false, error: message, ms: now() - at });
+        const end = now();
+        results.push({
+          seq: call.seq,
+          ok: false,
+          error: message,
+          ms: end - at,
+          startedAt: at,
+          endedAt: end,
+        });
       }
     }
   }
@@ -390,8 +422,12 @@ async function askWithRetries(
     } catch {
       res = undefined;
     }
-    if (res !== undefined && !sessionAskRetryable(res.status)) return res;
-    if (attempt >= TOOL_SESSION_LIMITS.RETRIES) return res;
+    if (res !== undefined && !sessionAskRetryable(res.status)) {
+      return res;
+    }
+    if (attempt >= TOOL_SESSION_LIMITS.RETRIES) {
+      return res;
+    }
     await sleep(TOOL_SESSION_LIMITS.RETRY_BASE_MS * 2 ** attempt);
   }
 }
@@ -413,18 +449,26 @@ function film(
   const shoot = async (): Promise<void> => {
     try {
       const shot = await frame();
-      if (shot === undefined) return;
+      if (shot === undefined) {
+        return;
+      }
       const jpeg = Buffer.from(shot).toString('base64');
-      if (jpeg === last) return;
+      if (jpeg === last) {
+        return;
+      }
       last = jpeg;
       // Counted only once the platform took it: a refused picture is not a filmed drive.
-      if ((await send(jpeg)).ok) sent += 1;
+      if ((await send(jpeg)).ok) {
+        sent += 1;
+      }
     } catch {
       // The next tick tries again.
     }
   };
   const timer = setInterval(() => {
-    if (busy === undefined) busy = shoot().finally(() => (busy = undefined));
+    if (busy === undefined) {
+      busy = shoot().finally(() => (busy = undefined));
+    }
   }, everyMs);
   timer.unref();
   return {
@@ -461,10 +505,14 @@ export async function pickOwnDriveSession(
   const own: DriveCandidate[] = [];
   for (const tab of tabs) {
     const key = await keyOf(tab.sessionId).catch(() => undefined);
-    if (key === apiKey) own.push(tab);
+    if (key === apiKey) {
+      own.push(tab);
+    }
   }
   const picked = pickDriveSession(own, goal);
-  if (picked !== undefined) return picked;
+  if (picked !== undefined) {
+    return picked;
+  }
   return (await reopen?.().catch(() => undefined)) ?? null;
 }
 
@@ -503,12 +551,18 @@ export function pickDriveSession(
     for (let i = 0; i < a.length; i += 1) {
       const x = a[i] ?? 0;
       const y = b[i] ?? 0;
-      if (x !== y) return x < y;
+      if (x !== y) {
+        return x < y;
+      }
     }
     return false;
   };
   let best: DriveCandidate | undefined;
-  for (const tab of tabs) if (best === undefined || better(rank(tab), rank(best))) best = tab;
+  for (const tab of tabs) {
+    if (best === undefined || better(rank(tab), rank(best))) {
+      best = tab;
+    }
+  }
   return best?.sessionId;
 }
 
@@ -525,7 +579,9 @@ export function driveVerdict(out: {
   /** How the drive's checks came out. `proved` only says one RAN; this says what each answered. */
   checks?: { held: number; failed: number; undecided: number };
 }): DriveVerdict {
-  if (out.error !== undefined) return 'unknown';
+  if (out.error !== undefined) {
+    return 'unknown';
+  }
   // A check that came back "no" is a failed drive whatever else held. A goal the model judged unmet
   // is its opinion, not evidence: with no check against it the drive is not proved, never failed.
   const graded = driveFlowStatus({
@@ -533,16 +589,28 @@ export function driveVerdict(out: {
     failed: out.checks?.failed ?? 0,
     goalMet: out.goalMet,
   });
-  if (RunFlowStatus.FAIL === graded) return 'no';
+  if (RunFlowStatus.FAIL === graded) {
+    return 'no';
+  }
   // The quoted texts are looked for on the page the drive ENDED on. None there refutes the goal;
   // some missing does not, because a goal that quotes where it starts ("from "Count is 0" to
   // "Count is 1"") loses that text by working. Then the goal's own judgement decides, as below.
   const goals = out.goals ?? [];
-  if (0 < goals.length && goals.every((g) => 'no' === g.verified)) return 'no';
-  if (0 < goals.length && !goals.some((g) => 'yes' === g.verified)) return 'unknown';
+  if (0 < goals.length && goals.every((g) => 'no' === g.verified)) {
+    return 'no';
+  }
+  if (0 < goals.length && !goals.some((g) => 'yes' === g.verified)) {
+    return 'unknown';
+  }
   // A yes needs a check that held behind it: the model saying the goal was met is not evidence.
-  if (!out.proved || RunFlowStatus.PASS !== graded) return 'unknown';
-  if (true === out.goalMet) return 'yes';
-  if (0 < goals.length && goals.every((g) => 'yes' === g.verified)) return 'yes';
+  if (!out.proved || RunFlowStatus.PASS !== graded) {
+    return 'unknown';
+  }
+  if (true === out.goalMet) {
+    return 'yes';
+  }
+  if (0 < goals.length && goals.every((g) => 'yes' === g.verified)) {
+    return 'yes';
+  }
   return 'unknown';
 }

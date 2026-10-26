@@ -75,10 +75,13 @@ const SHIPPED: readonly string[] = [
   'blind-spot',
   'sdk.failed',
   'net.detail',
+  'net.response-body',
   'human.control',
   'human.mark',
   'download',
   'hud.used',
+  'media.state',
+  'canvas.digest',
   // actions
   'click',
   'dblclick',

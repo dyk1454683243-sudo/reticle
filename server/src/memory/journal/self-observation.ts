@@ -50,6 +50,7 @@ const NET_TYPES: ReadonlySet<string> = new Set([
   EventType.NET_REQUEST,
   EventType.NET_PENDING,
   EventType.NET_DETAIL,
+  EventType.NET_RESPONSE_BODY,
   EventType.NET_STREAM,
 ]);
 
@@ -66,7 +67,9 @@ function pathOf(url: string): string {
 
 /** True when this event is the page fetching Reticle's own code rather than doing anything. */
 export function isSelfObservation(event: ReticleEvent): boolean {
-  if (!NET_TYPES.has(event.type)) return false;
+  if (!NET_TYPES.has(event.type)) {
+    return false;
+  }
   const path = pathOf(urlForMatch(event.data));
   return path.includes(SCOPE_PATH) || path.includes(SCOPE_FLATTENED);
 }

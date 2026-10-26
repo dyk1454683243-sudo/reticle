@@ -3,6 +3,7 @@ import {
   NetInitiator,
   PredicateKind,
   ResponseBodyReason,
+  SettledChannel,
   StreamDirection,
   isDevToolingUrl,
   isForeignTraffic,
@@ -10,10 +11,13 @@ import {
   REDACTED_VALUE,
   type ReticleEvent,
 } from '@reticlehq/core';
+import { isReticleVoice } from '../../state-bookkeeping.js';
 import { describeObserved } from './observed-in-window.js';
 import { netEvidence } from './net-evidence.js';
+import { mergeNetworkDetail } from '@/window/network-detail-merge.js';
 import {
   checkRequestBody,
+  REMEDY_BODY_CAPTURE,
   newRequestBodyState,
   requestBodyVerdict,
 } from './predicate-request-body.js';
@@ -32,6 +36,7 @@ import {
   type EvalResult,
 } from './predicate-eval-kit.js';
 import { keyFragmentOnly } from './body-key-fragment.js';
+import { evalExactCount } from '@/exact-count.js';
 import {
   PRE_ATTACH_CAVEAT,
   nativeDownloadReason,
@@ -80,7 +85,9 @@ export * from './predicate-schema.js';
  * This exists so an agent can assert on the OUTCOME rather than on a number Reticle invented.
  */
 function callSucceeded(data: Record<string, unknown>): boolean {
-  if ('boolean' === typeof data['ok']) return data['ok'];
+  if ('boolean' === typeof data['ok']) {
+    return data['ok'];
+  }
   const status = num(data['status']);
   return status === undefined || status < 400;
 }
@@ -115,7 +122,9 @@ function observedNetCalls(
 ): string {
   const calls = events.filter((e) => e.type === EventType.NET_REQUEST);
   const base = describeObserved('calls', calls.map(describeCall));
-  if (urlContains === undefined) return base;
+  if (urlContains === undefined) {
+    return base;
+  }
   const encoded = encodeURIComponent(REDACTED_VALUE);
   const redacted = calls.some((e) => {
     const url = str(e.data['url']) ?? '';
@@ -132,41 +141,13 @@ function describeSignalFilter(
   return JSON.stringify(filter);
 }
 
-/**
- * Exact cardinality, once, for every channel that can count its matches.
- *
- * `net` and `signal` are the same assertion over different evidence — "this happened EXACTLY n
- * times" — and the interesting half is the same on both: an over-count is `decided`, because a
- * window only accumulates and a count cannot come back down, so waiting out the rest of the budget
- * to report a double-fire buys nothing but latency.
- *
- * `noun` names the population in prose ("network call(s)", "signal(s)"), `filter` is the matcher as
- * applied, and `assertion` is the oracle that judged it.
- */
-function evalExactCount(args: {
-  matched: number;
-  want: number;
-  noun: string;
-  filter: string;
-  assertion: string;
-}): EvalResult {
-  const { matched, want, noun, filter, assertion } = args;
-  if (matched === want) return { pass: true, evidence: { matched } };
-  return {
-    pass: false,
-    ...(matched > want ? { decided: true } : {}),
-    failureReason: `expected ${String(want)} ${noun} matching ${filter}, saw ${String(matched)}`,
-    observed: `${String(matched)} matching ${noun}`,
-    expected: `exactly ${String(want)} matching ${filter}`,
-    assertion,
-  };
-}
-
 function nativeDownloadMiss(
   events: ReticleEvent[],
   p: Extract<Predicate, { kind: typeof PredicateKind.NET }>,
 ): EvalResult | undefined {
-  if (!targetsNativeDownload(p.urlContains)) return undefined;
+  if (!targetsNativeDownload(p.urlContains)) {
+    return undefined;
+  }
   const reason = nativeDownloadReason(describeNetFilter(p));
   return {
     pass: false,
@@ -200,7 +181,9 @@ const DOCUMENT_INITIATORS: ReadonlySet<string> = new Set([
  * IPC. The capsule's blast radius uses it to keep a page load out of "what this action also did".
  */
 export function isDocumentInitiated(event: ReticleEvent): boolean {
-  if (event.type !== EventType.NET_REQUEST) return false;
+  if (event.type !== EventType.NET_REQUEST) {
+    return false;
+  }
   const initiator = str(event.data['initiator']);
   return initiator !== undefined && DOCUMENT_INITIATORS.has(initiator);
 }
@@ -240,13 +223,13 @@ function wantedBody(p: Extract<Predicate, { kind: typeof PredicateKind.NET }>): 
  */
 export function skippedBodyRemedy(reason: unknown): string | undefined {
   if (ResponseBodyReason.STREAMING === reason) {
-    return 'The body was streamed (text/event-stream or ndjson): the SDK never reads a stream, because reading it would hang the app, and capture is already on. Assert the result in the DOM or in state instead, or use a non-streaming endpoint.';
+    return 'The body was streamed in an unsupported format (such as ndjson), and capture is already on. Assert the result in the DOM or in state instead, or use a non-streaming endpoint.';
   }
   if (ResponseBodyReason.NOT_TEXT === reason) {
     return 'The body is not text (binary, or a content type that is not recorded), and capture is already on. Assert the result in the DOM or in state instead.';
   }
   if (ResponseBodyReason.UNREADABLE === reason) {
-    return 'The body could not be read before the read deadline, and capture is already on. A response that is still streaming does this. Assert the result in the DOM or in state instead.';
+    return 'The body is not available yet or could not be read, and capture is already on. SSE capture can take up to 10 seconds. Use wait_for with a sufficient timeout to retry the body assertion. If the body remains unavailable, assert the result in the DOM or in state instead.';
   }
   return undefined;
 }
@@ -254,7 +237,9 @@ export function skippedBodyRemedy(reason: unknown): string | undefined {
 /** The skip reason every one of these calls carries, when they all carry the same one. */
 export function sharedSkipReason(reasons: readonly unknown[]): unknown {
   const [first] = reasons;
-  if (first === undefined) return undefined;
+  if (first === undefined) {
+    return undefined;
+  }
   return reasons.every((r) => r === first) ? first : undefined;
 }
 
@@ -264,13 +249,17 @@ function unrecordedBodyReason(
   reason: unknown,
 ): string {
   const head = `a call matching ${describeNetFilter(p)} was answered, but its body was not recorded, so ${wantedBody(p)} could not be checked, which is not the same as absent.`;
-  return `${head} ${skippedBodyRemedy(reason) ?? 'Enable it where the app calls connect(): reticle({ captureNetworkBodies: true })'}`;
+  return `${head} ${skippedBodyRemedy(reason) ?? REMEDY_BODY_CAPTURE}`;
 }
 
 export function evalNet(
   events: ReticleEvent[],
   p: Extract<Predicate, { kind: typeof PredicateKind.NET }>,
 ): EvalResult {
+  // SSE headers close the request immediately. A later detail supplies its captured body without another call.
+  if (p.bodyContains !== undefined || p.bodyMatches !== undefined) {
+    events = mergeNetworkDetail(events);
+  }
   const since = p.since ?? 0;
   /**
    * Computed once: the gate every zero-match downgrade below reads. True means the resource-timing
@@ -318,7 +307,9 @@ export function evalNet(
   let redactedResponseField: string | undefined;
   const requestState = newRequestBodyState();
   const matches = events.filter((e) => {
-    if (e.type !== EventType.NET_REQUEST || e.t < since) return false;
+    if (e.type !== EventType.NET_REQUEST || e.t < since) {
+      return false;
+    }
     const d = e.data;
     if (p.method !== undefined && str(d['method'])?.toUpperCase() !== p.method.toUpperCase()) {
       return false;
@@ -336,10 +327,16 @@ export function evalNet(
         unobservableStatus = true;
         return false;
       }
-      if (status !== p.status) return false;
+      if (status !== p.status) {
+        return false;
+      }
     }
-    if (p.ok !== undefined && callSucceeded(d) !== p.ok) return false;
-    if (!checkRequestBody(d, p, requestState)) return false;
+    if (p.ok !== undefined && callSucceeded(d) !== p.ok) {
+      return false;
+    }
+    if (!checkRequestBody(d, p, requestState)) {
+      return false;
+    }
     if (p.bodyContains !== undefined || p.bodyMatches !== undefined) {
       // The RESPONSE body only, and this is the whole point of these fields. Searching the request
       // too would let `bodyContains: "1187.01"` pass on the very defect it exists to catch: the app
@@ -360,11 +357,15 @@ export function evalNet(
         if (true === d['responseBodyTruncated']) {
           truncatedBody ??= response;
           truncatedClause ??= clause;
-        } else bodyMismatch ??= response;
+        } else {
+          bodyMismatch ??= response;
+        }
         return false;
       };
       if (p.bodyContains !== undefined) {
-        if (!response.includes(p.bodyContains)) return missed(NetBodyAssertion.CONTAINS);
+        if (!response.includes(p.bodyContains)) {
+          return missed(NetBodyAssertion.CONTAINS);
+        }
         const fragment = keyFragmentOnly(response, p.bodyContains);
         if (fragment !== undefined) {
           keyFragment ??= { key: fragment, body: response };
@@ -373,7 +374,9 @@ export function evalNet(
       }
       if (p.bodyMatches !== undefined) {
         const verdict = matchJsonBody(response, p.bodyMatches);
-        if ('mismatch' === verdict) return missed(NetBodyAssertion.MATCHES);
+        if ('mismatch' === verdict) {
+          return missed(NetBodyAssertion.MATCHES);
+        }
         if ('match' !== verdict) {
           redactedResponseField ??= verdict.redacted;
           return false;
@@ -447,7 +450,9 @@ export function evalNet(
     };
   }
   const requestVerdict = requestBodyVerdict(requestState, p, matches.length, bodyMismatch);
-  if (requestVerdict !== undefined) return requestVerdict;
+  if (requestVerdict !== undefined) {
+    return requestVerdict;
+  }
   if (bodyMismatch !== undefined && 0 === matches.length) {
     // The call is there and its body is there; only the VALUE differs. Counting it as zero matches
     // points at the wiring, which is the one place the defect is not. A field clause also names the
@@ -469,7 +474,9 @@ export function evalNet(
   if (p.count !== undefined) {
     if (0 === matches.length) {
       const download = nativeDownloadMiss(events, p);
-      if (download !== undefined) return download;
+      if (download !== undefined) {
+        return download;
+      }
     }
     if (
       matches.length !== p.count &&
@@ -502,7 +509,9 @@ export function evalNet(
   const hit = matches[0];
   if (hit === undefined) {
     const download = nativeDownloadMiss(events, p);
-    if (download !== undefined) return download;
+    if (download !== undefined) {
+      return download;
+    }
   }
   if (hit === undefined && targetsUnobservedChannel(p.urlContains) && !sawSubresources) {
     const reason = unobservedChannelReason(describeNetFilter(p));
@@ -534,9 +543,17 @@ export function evalAnimation(
 ): EvalResult {
   const wantType = true === p.completed ? EventType.ANIM_END : EventType.ANIM_START;
   const hit = events.find((e) => {
-    if (e.type !== wantType) return false;
-    if (p.name !== undefined && str(e.data['name']) !== p.name) return false;
-    if (p.target !== undefined && e.ref !== p.target) return false;
+    if (e.type !== wantType) {
+      return false;
+    }
+    const name = str(e.data['name']);
+    // A check with no name asks about the app, so Reticle's own bookkeeping signals do not count.
+    if (p.name === undefined ? isReticleVoice(name ?? '') : name !== p.name) {
+      return false;
+    }
+    if (p.target !== undefined && e.ref !== p.target) {
+      return false;
+    }
     return true;
   });
   return hit !== undefined
@@ -561,8 +578,14 @@ export function evalSignal(
    */
   let redactedField: string | undefined;
   const isMatch = (e: ReticleEvent): boolean => {
-    if (e.type !== EventType.SIGNAL) return false;
-    if (p.name !== undefined && str(e.data['name']) !== p.name) return false;
+    if (e.type !== EventType.SIGNAL) {
+      return false;
+    }
+    const name = str(e.data['name']);
+    // A check with no name asks about the app, so Reticle's own bookkeeping signals do not count.
+    if (p.name === undefined ? isReticleVoice(name ?? '') : name !== p.name) {
+      return false;
+    }
     if (p.dataMatches !== undefined) {
       const payload = (e.data['data'] ?? {}) as Record<string, unknown>;
       const hidden =
@@ -573,12 +596,16 @@ export function evalSignal(
         redactedField ??= hidden;
         return false;
       }
-      if (!dataMatches(payload, p.dataMatches)) return false;
+      if (!dataMatches(payload, p.dataMatches)) {
+        return false;
+      }
     }
     return true;
   };
   const redactedVerdict = (): EvalResult | undefined => {
-    if (redactedField === undefined) return undefined;
+    if (redactedField === undefined) {
+      return undefined;
+    }
     const field = JSON.stringify(redactedField);
     return {
       pass: false,
@@ -598,7 +625,9 @@ export function evalSignal(
     const matched = events.filter(isMatch).length;
     // A redacted payload might have been one of the matches, so no count over it is decided.
     const unjudgeable = redactedVerdict();
-    if (unjudgeable !== undefined) return unjudgeable;
+    if (unjudgeable !== undefined) {
+      return unjudgeable;
+    }
     return evalExactCount({
       matched,
       want: p.count,
@@ -609,10 +638,14 @@ export function evalSignal(
   }
 
   const hit = events.find(isMatch);
-  if (hit !== undefined) return { pass: true, evidence: hit.data };
+  if (hit !== undefined) {
+    return { pass: true, evidence: hit.data };
+  }
   // `find` scanned every event to get here, so a redacted payload has been seen if there was one.
   const unjudgeable = redactedVerdict();
-  if (unjudgeable !== undefined) return unjudgeable;
+  if (unjudgeable !== undefined) {
+    return unjudgeable;
+  }
 
   // Near-miss: show signals that fired with the same name (so the agent sees the real data).
   const sameName = events
@@ -678,6 +711,12 @@ const SETTLE_ACTIVITY: ReadonlySet<EventType> = new Set([
   EventType.DOM_ATTR,
 ]);
 
+/** An app-scoped settle: the default's activity, and every framework render commit. */
+const APP_ACTIVITY: ReadonlySet<EventType> = new Set([...SETTLE_ACTIVITY, EventType.RENDER_COMMIT]);
+
+/** The quiet window of a network-scoped settle: a completed request is the only activity. */
+const NETWORK_ACTIVITY: ReadonlySet<EventType> = new Set([EventType.NET_REQUEST]);
+
 /** The three net-shaped event types a URL can be read off — the only ones dev tooling can produce. */
 const NET_TYPES: ReadonlySet<EventType> = new Set([
   EventType.NET_PENDING,
@@ -687,6 +726,8 @@ const NET_TYPES: ReadonlySet<EventType> = new Set([
 
 /** Default quiet window — enough to absorb a render+xhr settle without waiting on slow polls. */
 const DEFAULT_QUIET_MS = 500;
+/** Work the app declared (`reticle.busy`; core's `RETICLE_BUSY_SIGNAL`); not imported: coupling only shrinks. */
+const RETICLE_BUSY_SIGNAL = 'reticle:busy';
 
 /**
  * Did the browser LEAVE for this record, rather than make a request whose result we will see?
@@ -756,7 +797,9 @@ export function evalSettled(
   const ignoredForeign: string[] = [];
   const ignoredDepartures: string[] = [];
   const events = allEvents.filter((e) => {
-    if (!NET_TYPES.has(e.type)) return true;
+    if (!NET_TYPES.has(e.type)) {
+      return true;
+    }
     // Classified by `urlForMatch`, DISCLOSED by `url`: redaction rewrites sensitive path segments at
     // emit time (`/auth/token/refresh-context` -> `/auth/token/[REDACTED]`), and a declared
     // `background` pattern is matched with `String.includes` — so classifying on the displayed URL
@@ -766,17 +809,23 @@ export function evalSettled(
     const matchUrl = urlForMatch(e.data);
     const shown = str(e.data['url']);
     if (isDevToolingUrl(matchUrl)) {
-      if (shown !== undefined && !ignoredDevTooling.includes(shown)) ignoredDevTooling.push(shown);
+      if (shown !== undefined && !ignoredDevTooling.includes(shown)) {
+        ignoredDevTooling.push(shown);
+      }
       return false;
     }
     // Departure first: a departure to the app's own origin is still a request whose result nobody
     // will see, and reporting it as somebody else's host would be the wrong explanation.
     if (isDeparture(e.data)) {
-      if (shown !== undefined && !ignoredDepartures.includes(shown)) ignoredDepartures.push(shown);
+      if (shown !== undefined && !ignoredDepartures.includes(shown)) {
+        ignoredDepartures.push(shown);
+      }
       return false;
     }
     if (isForeignTraffic(matchUrl, scope?.appUrl, scope?.background ?? [])) {
-      if (shown !== undefined && !ignoredForeign.includes(shown)) ignoredForeign.push(shown);
+      if (shown !== undefined && !ignoredForeign.includes(shown)) {
+        ignoredForeign.push(shown);
+      }
       return false;
     }
     return true;
@@ -805,11 +854,16 @@ export function evalSettled(
   for (const e of events) {
     if (e.type === EventType.NET_PENDING) {
       const id = str(e.data['id']);
-      if (id === undefined) unkeyedPending += 1;
-      else pendingById.set(id, (pendingById.get(id) ?? 0) + 1);
+      if (id === undefined) {
+        unkeyedPending += 1;
+      } else {
+        pendingById.set(id, (pendingById.get(id) ?? 0) + 1);
+      }
     } else if (e.type === EventType.NET_REQUEST) {
       const id = str(e.data['id']);
-      if (id !== undefined) doneById.set(id, (doneById.get(id) ?? 0) + 1);
+      if (id !== undefined) {
+        doneById.set(id, (doneById.get(id) ?? 0) + 1);
+      }
     }
   }
   let inFlight = unkeyedPending;
@@ -824,22 +878,53 @@ export function evalSettled(
   // way as a pending with no completion.
   const openStreams = new Set<string>();
   for (const e of events) {
-    if (e.type !== EventType.NET_STREAM) continue;
+    if (e.type !== EventType.NET_STREAM) {
+      continue;
+    }
     const id = str(e.data['id']);
-    if (id === undefined) continue;
+    if (id === undefined) {
+      continue;
+    }
     const direction = str(e.data['direction']);
-    if (StreamDirection.OPEN === direction) openStreams.add(id);
-    else if (StreamDirection.CLOSE === direction) openStreams.delete(id);
+    if (StreamDirection.OPEN === direction) {
+      openStreams.add(id);
+    } else if (StreamDirection.CLOSE === direction) {
+      openStreams.delete(id);
+    }
   }
   const streaming = openStreams.size;
 
+  // Work only the app can see (`reticle.busy`): starts minus ends, in order, never below zero, so an
+  // end whose start fell before this window is not credit against work started inside it.
+  let appBusy = 0;
+  for (const e of events) {
+    if (e.type !== EventType.SIGNAL || RETICLE_BUSY_SIGNAL !== e.data['name']) {
+      continue;
+    }
+    const delta = (e.data['data'] as { delta?: unknown } | undefined)?.delta;
+    if ('number' === typeof delta) {
+      appBusy = Math.max(0, appBusy + Math.sign(delta));
+    }
+  }
+  if (appBusy > 0 && 0 === inFlight + streaming) {
+    const what = `${String(appBusy)} app task(s) still pending`;
+    return {
+      pass: false,
+      failureReason: `not settled: ${what}`,
+      observed: what,
+      expected: 'no work the app declared still pending',
+      assertion: 'settled.app-busy',
+      evidence: { settled: false, appBusy, ...disclosure },
+    };
+  }
+
   if (inFlight + streaming > 0) {
-    const what =
-      0 === streaming
-        ? `${String(inFlight)} request(s) still in flight`
-        : 0 === inFlight
-          ? `${String(streaming)} response body(ies) still streaming`
-          : `${String(inFlight)} request(s) in flight and ${String(streaming)} response body(ies) still streaming`;
+    let what = `${String(inFlight)} request(s) in flight and ${String(streaming)} response body(ies) still streaming`;
+    if (0 === streaming) {
+      what = `${String(inFlight)} request(s) still in flight`;
+    } else if (0 === inFlight) {
+      what = `${String(streaming)} response body(ies) still streaming`;
+    }
     return {
       pass: false,
       failureReason: `not settled: ${what}`,
@@ -855,10 +940,18 @@ export function evalSettled(
     };
   }
 
+  // A network-scoped settle reads only completed requests for the quiet window; the in-flight checks
+  // above already ran for every scope.
+  let activity = SETTLE_ACTIVITY;
+  if (SettledChannel.NETWORK === p.channel) {
+    activity = NETWORK_ACTIVITY;
+  } else if (SettledChannel.APP === p.channel) {
+    activity = APP_ACTIVITY;
+  }
   let lastT = -1;
   let lastType: EventType | undefined;
   for (const e of events) {
-    if (SETTLE_ACTIVITY.has(e.type) && e.t > lastT) {
+    if (activity.has(e.type) && e.t > lastT) {
       lastT = e.t;
       lastType = e.type;
     }

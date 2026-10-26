@@ -1,6 +1,6 @@
 import type { Ref } from '@/identity/brand.js';
 import type { Predicate } from '@/verdict/predicate.js';
-import { z } from 'zod';
+import * as z from 'zod';
 import { CONTRACT_FILE_VERSION, ElementState, QueryBy } from './constants/constants.js';
 // Imported from where they actually live: these are artifact constants, not wire constants.
 import {
@@ -30,16 +30,13 @@ import { RiskSurface } from '@/verdict/verification-run.js';
  * cannot express a value is honest; one that pretends to is a false green.
  */
 export const AttrNamesSchema = z.array(
-  z.string().refine(
-    (name) => !name.includes('='),
-    (name) => ({
-      message:
-        `\`attrs\` takes attribute NAMES only, not \`name=value\` — got ${JSON.stringify(name)}. ` +
-        'It PROJECTS each attribute onto the match, it does not filter on it. Drop the `=value` ' +
-        'half and read the returned `attrs` map, or assert the value with an `element` predicate ' +
-        'carrying `value`.',
-    }),
-  ),
+  z.string().refine((name) => !name.includes('='), {
+    error: (issue) =>
+      `\`attrs\` takes attribute NAMES only, not \`name=value\` — got ${JSON.stringify(issue.input)}. ` +
+      'It PROJECTS each attribute onto the match, it does not filter on it. Drop the `=value` ' +
+      'half and read the returned `attrs` map, or assert the value with an `element` predicate ' +
+      'carrying `value`.',
+  }),
 );
 
 /**
@@ -153,6 +150,18 @@ export interface MatchResult {
    * confirmed absence (a false negative); both are the false-green shape this tool exists to prevent.
    */
   scopeMissing?: boolean;
+  /**
+   * Present only when a framework error dialog (Next.js, Vite) is open over the page and a match is
+   * under it: the name of that dialog. The match is in the DOM, but a user sees only the dialog, so a
+   * presence check is not a plain pass (#1768).
+   */
+  coveredBy?: string;
+  /**
+   * Present only when a query matched by text and a person cannot read any match: why not. The
+   * text colour is almost the colour behind it, or the composed opacity is almost zero. The text is
+   * in the DOM, but nobody can see it, so a presence check is not a plain pass (#1797).
+   */
+  unreadable?: string;
   /**
    * Zero-match diagnosis, present only on a miss: what IS on the page. `reticle_query` has always
    * returned this; MATCH (the command every PREDICATE uses) did not, so a failed assertion was a
@@ -373,7 +382,7 @@ export const AnnotationSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal(AnnotationKind.ASSERT_SIGNAL),
     name: z.string().min(1),
-    dataMatches: z.record(z.unknown()).optional(),
+    dataMatches: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     kind: z.literal(AnnotationKind.ASSERT_VISIBLE),

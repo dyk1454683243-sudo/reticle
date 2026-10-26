@@ -37,8 +37,9 @@ const base = (partial: Partial<PlanInput>): PlanInput =>
   }) as PlanInput;
 
 /** Every step whose title or detail names Claude Code at all. */
-const mentioningClaude = (plan: { steps: readonly { title: string; detail?: string; status: StepStatus }[] }) =>
-  plan.steps.filter((s) => /claude/i.test(`${s.title} ${s.detail ?? ''}`));
+const mentioningClaude = (plan: {
+  steps: readonly { title: string; detail?: string; status: StepStatus }[];
+}) => plan.steps.filter((s) => /claude/i.test(`${s.title} ${s.detail ?? ''}`));
 
 describe('the Claude Code MCP step', () => {
   it('is planned when the CLI is there, which was never the broken case', () => {
@@ -90,7 +91,9 @@ describe('inside Claude Code, with no CLI on PATH', () => {
   const inside = (partial: Partial<PlanInput>): PlanInput =>
     base({ claudeCli: false, insideClaudeCode: true, ...partial });
   const claudeWrite = (plan: ReturnType<typeof buildPlan>) =>
-    plan.steps.find((s) => StepStatus.APPLY === s.status && true === s.write?.path.endsWith('.mcp.json'));
+    plan.steps.find(
+      (s) => StepStatus.APPLY === s.status && true === s.write?.path.endsWith('.mcp.json'),
+    );
 
   it('writes the project .mcp.json, merged into nothing', () => {
     const step = claudeWrite(buildPlan(inside({ claudeProjectConfig: null })));
@@ -100,7 +103,8 @@ describe('inside Claude Code, with no CLI on PATH', () => {
 
   it('merges into an existing .mcp.json without dropping the servers already there', () => {
     const existing = JSON.stringify({ mcpServers: { other: { command: 'x', args: [] } } });
-    const content = claudeWrite(buildPlan(inside({ claudeProjectConfig: existing })))?.write?.content;
+    const content = claudeWrite(buildPlan(inside({ claudeProjectConfig: existing })))?.write
+      ?.content;
     expect(content).toContain('"other"');
     expect(content).toContain('@reticlehq/server');
   });

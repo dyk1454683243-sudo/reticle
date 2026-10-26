@@ -56,7 +56,7 @@ Two arguments of the flow replay make the branches possible, and you can use the
 
 ## What it needs
 
-**A project on the Reticle platform.** Every plan includes the Harness. A new account gets free credits to try it once, a card starts a 14-day trial with 500, and the paid plan includes 1,000 credits per seat each month. Run `reticle connect` once in your app's folder. The Harness runs on the platform: planning, personas, and every choice of what to press next. A model key of your own does not drive it, and a machine with no platform link gets the refusal and the way to fix it.
+**A project on the Reticle platform.** Every plan includes the Harness. A new account gets free credits to try it once, a card starts a 14-day trial with 500, and the paid plan includes 1,000 credits per seat each month. Run `reticle connect` once in your app's folder, then switch the Harness on for the project (`npx @reticlehq/server config --harness on`, or the switch in the HUD). The Harness runs on the platform: planning, personas, and every choice of what to press next. A model key of your own does not drive it, and a machine with no platform link gets the refusal and the way to fix it.
 
 | Variable | What it does |
 | --- | --- |
@@ -68,7 +68,7 @@ Two arguments of the flow replay make the branches possible, and you can use the
 
 ## How it decides
 
-The platform drives with Jev, a System One model that answers typed questions and cannot write. Every choice is a selection from candidates read off the page: which element, which tool, what consequence to claim. Three rules sit around those choices, because each one was a drive that stopped short or claimed nothing:
+The platform drives with Jev, a System One model that answers typed questions and cannot write. Every choice is a selection from candidates read off the page: which element, which tool, what consequence to claim. Four rules sit around those choices:
 
 - A journey that names a page it has not reached ("then turn on automatic refunds in Settings") is not finished. The Harness goes there instead of stopping.
 - A dialog whose destructive action already ran is closed rather than treated as the end of the journey.
@@ -79,10 +79,10 @@ The platform drives with Jev, a System One model that answers typed questions an
 
 A project linked to a Reticle workspace reads two things from it before a drive starts, and honours both:
 
-- **The switch.** Autonomous driving can be turned off per project, from the HUD's Reticle Harness switch, the dashboard (Settings → Projects → Reticle Harness on <project>), or `npx @reticlehq/server config --harness on|off` in the project. A drive then refuses and says where to turn it back on. Switched off while a platform drive is running, the drive stops at its next turn with `stopReason: "stopped"`, keeps what it drove, and says so in the Agent Log. Everything else is unaffected, including the tools your own agent drives with.
+- **The switch.** The Harness is off for a new project, because each drive spends credits. Switch it on for each project: use the Reticle Harness switch in the HUD, the dashboard (Settings → Projects), or run `npx @reticlehq/server config --harness on` in the project. While it is off, a drive refuses and tells you how to switch it on. If you switch it off while a platform drive runs, the drive stops at its next turn with `stopReason: "stopped"`, keeps what it drove, and says so in the Agent Log. The switch does not change the tools that your own agent drives with.
 - **Credits.** Harness drives and dashboard chat checks spend credits, the same credits that pay for the rest of the platform. The platform sets the amount for your plan (see above). The HUD shows how many are left; once they are spent a drive is refused with that number and the way to get more.
 
-If only the settings endpoint is unreachable, the on/off switch and the credit check do not block a drive: an unreachable settings endpoint is not a reason to lose a feature you were never told to stop using. The drive itself still needs the platform, so with no connection at all it is refused with the reason.
+If Reticle cannot read the project settings from the platform, the drive does not start. It needs a confirmed yes from the platform for the switch and the credits. Try again when the platform answers.
 
 ## What it will not do
 

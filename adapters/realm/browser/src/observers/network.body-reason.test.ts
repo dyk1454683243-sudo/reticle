@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { ReadableStream } from 'node:stream/web';
+import { TextDecoder, TextEncoder } from 'node:util';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { EventType, ResponseBodyReason } from '@reticlehq/core';
 import { installNetwork } from './network.js';
 import type { Emit, Teardown } from './types.js';
@@ -6,16 +8,18 @@ import type { Emit, Teardown } from './types.js';
 /**
  * #1520: with body capture ON, a body the SDK skips on purpose says why.
  *
- * A streamed response (`text/event-stream`) is never read, because reading it would hang the app,
- * and a binary type is not recorded. Both reached the engine as a call with no `responseBody` and no
+ * Unsupported streams and binary types are not recorded. Both reached the engine with no body and no
  * reason, which is exactly what a call looks like with capture OFF. A body clause then answered `no`
  * and told the caller to enable a setting that was already on. With capture off nothing is stamped,
  * so that case keeps its own remedy.
  */
 
 const teardowns: Teardown[] = [];
+beforeEach(() => vi.stubGlobal('TextDecoder', TextDecoder));
 afterEach(() => {
-  for (const t of teardowns.splice(0)) t();
+  for (const t of teardowns.splice(0)) {
+    t();
+  }
   vi.unstubAllGlobals();
 });
 
@@ -44,19 +48,28 @@ async function requestFor(res: Response, captureBodies: boolean): Promise<Record
   teardowns.push(installNetwork(emit, { captureBodies }));
   await fetch('/mcp', { method: 'POST' });
   await flush();
-  const request = events.find((e) => e.type === EventType.NET_REQUEST);
+  const request =
+    events.find((e) => e.type === EventType.NET_RESPONSE_BODY) ??
+    events.find((e) => e.type === EventType.NET_REQUEST);
   expect(request).toBeDefined();
   return request?.data ?? {};
 }
 
 describe('a body skipped with capture on carries its reason', () => {
-  it('a streamed response is marked streaming', async () => {
-    const data = await requestFor(
-      response('text/event-stream', () => Promise.resolve('data: x')),
-      true,
-    );
-    expect(data['responseBody']).toBeUndefined();
-    expect(data['responseBodyReason']).toBe(ResponseBodyReason.STREAMING);
+  it('a finished SSE response carries its body, not a skipped-stream reason (#1848)', async () => {
+    const res = response('text/event-stream', () => Promise.resolve('data: x'));
+    res.clone = () =>
+      ({
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: x'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response;
+    const data = await requestFor(res, true);
+    expect(data['responseBody']).toBe('data: x');
+    expect(data['responseBodyReason']).toBeUndefined();
   });
 
   it('an ndjson stream is marked streaming', async () => {
@@ -129,13 +142,17 @@ function fakeXhr(contentType: string, responseType: string, responseText = 'data
       /* recorded by the patch */
     }
     send(): void {
-      for (const listener of this.#listeners) listener();
+      for (const listener of this.#listeners) {
+        listener();
+      }
     }
     getResponseHeader(name: string): string | null {
       return 'content-type' === name.toLowerCase() ? contentType : null;
     }
     addEventListener(type: string, listener: () => void): void {
-      if ('loadend' === type) this.#listeners.push(listener);
+      if ('loadend' === type) {
+        this.#listeners.push(listener);
+      }
     }
   }
   vi.stubGlobal('XMLHttpRequest', FakeXhr);
@@ -153,11 +170,11 @@ function xhrRequestFor(captureBodies: boolean): Record<string, unknown> {
 }
 
 describe('the XHR path stamps the same reasons (#1630 review)', () => {
-  it('an SSE response is marked streaming', () => {
+  it('a finished SSE response carries its body (#1848)', () => {
     fakeXhr('text/event-stream', '');
     const data = xhrRequestFor(true);
-    expect(data['responseBody']).toBeUndefined();
-    expect(data['responseBodyReason']).toBe(ResponseBodyReason.STREAMING);
+    expect(data['responseBody']).toBe('data: x');
+    expect(data['responseBodyReason']).toBeUndefined();
   });
 
   it('a binary response is marked not-text', () => {

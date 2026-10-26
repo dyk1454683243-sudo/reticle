@@ -10,12 +10,27 @@ import { CONSOLE_ATTACH_NOTE, EventType, PredicateKind, type ReticleEvent } from
 import type { EvalResult } from './predicate-eval-kit.js';
 import type { Predicate } from './predicate-schema.js';
 
-/** The only console levels Reticle instruments (console.info/debug/trace are NOT patched). */
+/** The console levels the SDK patches. console.trace is not patched, so it is not here. */
 const CONSOLE_LEVEL_TYPE: Readonly<Record<string, EventType>> = {
   log: EventType.CONSOLE_LOG,
   warn: EventType.CONSOLE_WARN,
   error: EventType.CONSOLE_ERROR,
+  info: EventType.CONSOLE_INFO,
+  debug: EventType.CONSOLE_DEBUG,
 };
+
+/** What a check with no level reads: every level when it names a message, the loud ones when not. */
+const LOUD_LEVELS: ReadonlySet<EventType> = new Set([
+  EventType.CONSOLE_LOG,
+  EventType.CONSOLE_WARN,
+  EventType.CONSOLE_ERROR,
+  EventType.ERROR_UNCAUGHT,
+]);
+const EVERY_LEVEL: ReadonlySet<EventType> = new Set([
+  ...LOUD_LEVELS,
+  EventType.CONSOLE_INFO,
+  EventType.CONSOLE_DEBUG,
+]);
 
 /**
  * Has the console channel reported ANYTHING in this window, at any level?
@@ -47,15 +62,14 @@ export function evalConsole(
   p: Extract<Predicate, { kind: typeof PredicateKind.CONSOLE }>,
 ): EvalResult {
   const since = p.since ?? 0;
-  // Reticle only instruments console.log/warn/error. A level outside that set is never captured,
-  // so its events can't exist — and an `absent` assertion on it would verify NOTHING while
-  // reporting green. Fail loudly instead of false-passing.
+  // A level the SDK does not patch is never captured, so its events can't exist — and an `absent`
+  // assertion on it would verify NOTHING while reporting green. Fail loudly instead of false-passing.
   if (p.level !== undefined && p.level !== 'error' && CONSOLE_LEVEL_TYPE[p.level] === undefined) {
     return {
       pass: false,
-      failureReason: `console level '${p.level}' is not captured — Reticle instruments console.log, console.warn, console.error only`,
+      failureReason: `console level '${p.level}' is not captured — Reticle instruments console.log, console.warn, console.error, console.info and console.debug only`,
       observed: `level '${p.level}' is not instrumented, so no event of it can ever exist`,
-      expected: 'a level Reticle captures: log, warn, or error',
+      expected: 'a level Reticle captures: log, warn, error, info or debug',
       assertion: 'console.uninstrumented-level',
     };
   }
@@ -63,12 +77,10 @@ export function evalConsole(
     if (e.t < since) return false;
     const isErr = e.type === EventType.CONSOLE_ERROR || e.type === EventType.ERROR_UNCAUGHT;
     if (p.level === undefined) {
-      return (
-        e.type === EventType.CONSOLE_LOG ||
-        e.type === EventType.CONSOLE_WARN ||
-        e.type === EventType.CONSOLE_ERROR ||
-        e.type === EventType.ERROR_UNCAUGHT
-      );
+      // A named message is matched at any level: `{ contains: "X", absent: true }` used to pass
+      // while X was logged with console.info. A clean-console check names no message and stays
+      // deaf to info/debug chatter, which most apps produce on every action.
+      return ('contains' in p && p.contains !== undefined ? EVERY_LEVEL : LOUD_LEVELS).has(e.type);
     }
     if ('error' === p.level) return isErr;
     return e.type === CONSOLE_LEVEL_TYPE[p.level];

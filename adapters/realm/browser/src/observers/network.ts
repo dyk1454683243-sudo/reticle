@@ -5,7 +5,6 @@ import {
   NEXT_ACTION_HEADER,
   REQUEST_SHAPE_FIELD,
   REQUEST_SHAPE_NONE,
-  RETICLE_WS_PATH,
   ResponseBodyReason,
   StreamTransport,
   StreamDirection,
@@ -19,10 +18,11 @@ import {
   projectErrorBody,
   shouldCaptureErrorBody,
   skippedBodyReason,
-  withBodyDeadline,
 } from './net-detail/network-body.js';
+import { captureResponseBody, isEventStream } from './net-detail/network-response-body.js';
 import { redactUrl, netUrlFields } from './net-detail/network-redact.js';
 import { watchStreamedBody } from './network-stream.js';
+import { frameFields, isBridgeSocket } from './net-detail/network-frames.js';
 import { requireCapturedMethod } from '@/util/captured-method.js';
 
 // Redaction lives in its own module; re-exported so callers keep importing it from here.
@@ -59,32 +59,6 @@ interface NetworkOptions {
   ignore?: (url: string) => boolean;
 }
 
-/** The byte size of a binary frame (ArrayBuffer / Blob / typed-array view), or undefined if unknown. */
-function binaryFrameBytes(data: unknown): number | undefined {
-  if (data instanceof ArrayBuffer) return data.byteLength;
-  if (typeof Blob !== 'undefined' && data instanceof Blob) return data.size;
-  if (ArrayBuffer.isView(data)) return data.byteLength;
-  return undefined;
-}
-
-/** Project one SSE/WebSocket frame: byte size + shape; the (capped, redacted) payload only when body
- * capture is on and it is a string frame. Binary frames report their byte size, not just a bare type. */
-function frameFields(data: unknown, captureBodies: boolean): Record<string, unknown> {
-  if (typeof data !== 'string') {
-    const bytes = binaryFrameBytes(data);
-    return bytes === undefined
-      ? { frameType: typeof data }
-      : { frameType: 'binary', frameBytes: bytes };
-  }
-  const out: Record<string, unknown> = { frameBytes: data.length };
-  if (captureBodies) {
-    const { body, truncated } = projectBody(data, 'application/json');
-    out['frame'] = body;
-    if (truncated) out['frameTruncated'] = true;
-  }
-  return out;
-}
-
 /**
  * Tokens for a body's SHAPE. Internal to the fingerprint: only the HASH of a shape string ever
  * leaves the page, so these names are an encoding rather than wire vocabulary.
@@ -99,8 +73,12 @@ const ShapeToken = { NULL: '0', STRING: 's', NUMBER: 'n', BOOLEAN: 'b', OTHER: '
  * email address, a session token or empty.
  */
 function shapeOf(value: unknown): string {
-  if (null === value) return ShapeToken.NULL;
-  if (Array.isArray(value)) return `[${value.map(shapeOf).join(',')}]`;
+  if (null === value) {
+    return ShapeToken.NULL;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(shapeOf).join(',')}]`;
+  }
   if ('object' === typeof value) {
     const fields = value as Record<string, unknown>;
     return `{${Object.keys(fields)
@@ -108,9 +86,15 @@ function shapeOf(value: unknown): string {
       .map((key) => `${key}:${shapeOf(fields[key])}`)
       .join(',')}}`;
   }
-  if ('string' === typeof value) return ShapeToken.STRING;
-  if ('number' === typeof value) return ShapeToken.NUMBER;
-  if ('boolean' === typeof value) return ShapeToken.BOOLEAN;
+  if ('string' === typeof value) {
+    return ShapeToken.STRING;
+  }
+  if ('number' === typeof value) {
+    return ShapeToken.NUMBER;
+  }
+  if ('boolean' === typeof value) {
+    return ShapeToken.BOOLEAN;
+  }
   return ShapeToken.OTHER;
 }
 
@@ -155,7 +139,9 @@ const DELETE = 0x7f;
 function hasControlCharacter(text: string): boolean {
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
-    if (code === DELETE) return true;
+    if (code === DELETE) {
+      return true;
+    }
     if (code < FIRST_PRINTABLE && code !== TAB && code !== LINE_FEED && code !== CARRIAGE_RETURN) {
       return true;
     }
@@ -171,8 +157,12 @@ function hasControlCharacter(text: string): boolean {
 function textOfBytes(body: unknown): string | undefined {
   // Bounded before decoding: a large upload is not walked, scanned and parsed on the page's thread
   // just to fingerprint it, and keeps the unknown-identity marker instead.
-  if (!(body instanceof ArrayBuffer || ArrayBuffer.isView(body))) return undefined;
-  if (body.byteLength > MAX_DECODED_BODY_BYTES) return undefined;
+  if (!(body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
+    return undefined;
+  }
+  if (body.byteLength > MAX_DECODED_BODY_BYTES) {
+    return undefined;
+  }
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
     return hasControlCharacter(text) ? undefined : text;
@@ -192,7 +182,9 @@ function formShape(form: FormData): string | undefined {
   const fields: string[] = [];
   let length = 0;
   form.forEach((value, name) => {
-    if ('string' === typeof value) length += value.length;
+    if ('string' === typeof value) {
+      length += value.length;
+    }
     // A JSON tuple per field, so no name can imitate a separator: `a=&b` is one field, not two.
     fields.push(JSON.stringify([name, 'string' === typeof value ? 0 : [value.type, value.size]]));
   });
@@ -222,7 +214,9 @@ function projectRequestBody(body: unknown, captureBodies: boolean): Record<strin
     (body as { constructor?: { name?: string } }).constructor?.name ?? typeof body;
   if ('string' === typeof body || bytesText !== undefined) {
     text = bytesText ?? (body as string);
-    if (text.length > 0) shape = fingerprintBody(jsonShape(text), text.length);
+    if (text.length > 0) {
+      shape = fingerprintBody(jsonShape(text), text.length);
+    }
   } else if (typeof FormData !== 'undefined' && body instanceof FormData) {
     // Read synchronously and never kept: names and kinds only, so it separates distinct uploads to
     // one endpoint without carrying any value (#1347).
@@ -243,7 +237,9 @@ function projectRequestBody(body: unknown, captureBodies: boolean): Record<strin
     return captureBodies ? { requestBodyType: typeOf() } : {};
   }
   const fields: Record<string, unknown> = { [REQUEST_SHAPE_FIELD]: shape };
-  if (!captureBodies || text === undefined || 0 === text.length) return fields;
+  if (!captureBodies || text === undefined || 0 === text.length) {
+    return fields;
+  }
   const { body: out, truncated } = projectBody(text, contentType);
   return truncated
     ? { ...fields, requestBody: out, requestBodyTruncated: true }
@@ -290,22 +286,36 @@ function netResponseMeta(
   contentLength: string | null,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  if (statusText !== '') out['statusText'] = statusText;
-  if (contentType !== null && contentType !== '') out['contentType'] = contentType;
+  if (statusText !== '') {
+    out['statusText'] = statusText;
+  }
+  if (contentType !== null && contentType !== '') {
+    out['contentType'] = contentType;
+  }
   const size = contentLength !== null ? Number.parseInt(contentLength, 10) : Number.NaN;
-  if (Number.isFinite(size)) out['responseSize'] = size;
+  if (Number.isFinite(size)) {
+    out['responseSize'] = size;
+  }
   return out;
 }
 
 function urlOf(input: RequestInfo | URL): string {
-  if ('string' === typeof input) return input;
-  if (input instanceof URL) return input.href;
+  if ('string' === typeof input) {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.href;
+  }
   return input.url;
 }
 
 function methodOf(input: RequestInfo | URL, init: RequestInit | undefined): string {
-  if (init?.method !== undefined) return init.method.toUpperCase();
-  if (input instanceof Request) return input.method.toUpperCase();
+  if (init?.method !== undefined) {
+    return init.method.toUpperCase();
+  }
+  if (input instanceof Request) {
+    return input.method.toUpperCase();
+  }
   return 'GET';
 }
 
@@ -371,7 +381,9 @@ const DEPENDENCY_FRAME = /node_modules|\/\.vite\/deps\//i;
  * pointing at the observer, because a reader can go and look, whereas a false attribution stops them.
  */
 export function firstAppFrame(stack: string | undefined): string | undefined {
-  if (stack === undefined) return undefined;
+  if (stack === undefined) {
+    return undefined;
+  }
   const frames = stack
     .split('\n')
     .slice(1)
@@ -397,12 +409,16 @@ interface NetTiming {
  * bogus 0. Exported for unit testing (jsdom doesn't post real resource entries).
  */
 export function extractTiming(entry: PerformanceResourceTiming | undefined): NetTiming {
-  if (entry === undefined) return {};
+  if (entry === undefined) {
+    return {};
+  }
   const timing: NetTiming = {};
   if (entry.responseStart > 0 && entry.requestStart > 0) {
     timing.ttfbMs = Math.round(entry.responseStart - entry.requestStart);
   }
-  if (entry.transferSize > 0) timing.transferSize = entry.transferSize;
+  if (entry.transferSize > 0) {
+    timing.transferSize = entry.transferSize;
+  }
   return timing;
 }
 
@@ -417,23 +433,6 @@ function resourceTiming(rawUrl: string): NetTiming {
 }
 
 /** Patch fetch + XMLHttpRequest to emit net.request events. Fully reversible. */
-/**
- * True for Reticle's OWN bridge connection, which must never be instrumented.
- *
- * The transport resolves `WebSocket` at call time, so a reconnect after instrumentation constructs a
- * PATCHED socket. From then on emitting an event calls transport.send -> the patched send emits a
- * NET_STREAM event -> which calls transport.send again, until the stack blows and the page is dead.
- * Keyed on the bridge PATH rather than the host: an app's own socket on the same origin must still be
- * observed, otherwise this guard would blind the stream category it exists to protect.
- */
-function isBridgeSocket(url: string): boolean {
-  try {
-    return new URL(url, location.href).pathname === RETICLE_WS_PATH;
-  } catch {
-    return url.includes(RETICLE_WS_PATH);
-  }
-}
-
 /**
  * Whether a function is the platform's own fetch rather than someone's wrapper.
  *
@@ -460,8 +459,26 @@ function isNativeFetch(fn: typeof window.fetch): boolean {
 /** Wrappers this module installed, so a re-install does not report itself as a foreign wrapper. */
 const OURS = new WeakSet<typeof window.fetch>();
 
+/**
+ * The page-wide mark of an installed network capture, shared by every copy of this module on the page.
+ *
+ * `OURS` is per module, so a second copy of the SDK (an app that ships it, given the injected one as
+ * well) wrapped fetch again and every request was recorded twice: one POST at the server, two
+ * `net.request` events, which is what a `duplicate-request` finding keys on. The first capture keeps
+ * the page; a later one installs nothing. `Symbol.for` is what makes the key the same across copies.
+ */
+const PAGE_CAPTURE = Symbol.for('reticle.network');
+const pageSlots = (): Record<symbol, unknown> => window as unknown as Record<symbol, unknown>;
+
 export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown {
+  // Another capture already owns this page: a second wrapper would only record every request twice.
+  if (undefined !== pageSlots()[PAGE_CAPTURE]) {
+    return () => undefined;
+  }
+  const owner = {};
+  pageSlots()[PAGE_CAPTURE] = owner;
   const captureBodies = true === opts.captureBodies;
+  const bodyCapture = new AbortController();
   // Default TRUE, unlike `captureBodies`. The two answer different questions: the general flag is a
   // volume-and-privacy decision about every 200 the app makes, and this one is about the handful of
   // bytes that say why something broke. See `shouldCaptureErrorBody`.
@@ -499,7 +516,9 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
     // Reticle's own call: pass it straight through, observed by nobody. Emitting even the PENDING
     // half would be wrong twice over — it lands in the agent's network evidence, and `settle` would
     // wait on the SDK's own screenshot as if the app had a request in flight.
-    if (true === opts.ignore?.(rawUrl)) return callFetch(input, init);
+    if (true === opts.ignore?.(rawUrl)) {
+      return callFetch(input, init);
+    }
     const id = nextId();
     const start = performance.now();
     const method = methodOf(input, init);
@@ -566,60 +585,31 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
       // applies to non-2xx responses even with body capture off. That is the intended trade: an
       // ordering caveat on requests that already failed, in exchange for the cause of the failure.
       const wantErrorBody = shouldCaptureErrorBody(res.status, captureErrorBodies);
-      if ((captureBodies || wantErrorBody) && isCapturableType(contentType)) {
-        // ONLY the body read can make the app wait (a chunked response with no content-length can be
-        // arbitrarily long). Clone synchronously so the app's stream is untouched, then read + emit from
-        // a DETACHED promise — the app already has res, so our bounded read is invisible to it. Without
-        // body capture (the DEFAULT) we emit synchronously below, exactly as before: no latency, no
-        // deferral, NET_REQUEST in order.
-        //
-        // Tradeoff, opt-in path only: under captureBodies the NET_REQUEST for THIS call lands after the
-        // bounded body read (≤ the deadline), so it can arrive out of order vs a later request's
-        // NET_PENDING, and a BARE `assert { net, count }` fired the instant the app's fetch resolves may
-        // see the count not-yet-incremented. Use `wait_for` for count/settle assertions when body
-        // capture is on (it already polls until the event lands). The default path has neither caveat.
-        let clone: Response | undefined;
-        try {
-          clone = res.clone();
-        } catch {
-          /* already consumed/locked — emit the envelope with no body */
-        }
-        // The whole IIFE is guarded: emit is the SDK's already-try/catch'd sink today, but a detached
-        // promise must never be able to surface an unhandledrejection into the host page even if a
-        // future caller passes a throwing emit. A body we can't read is simply dropped.
-        void (async () => {
-          // Capture was asked for and no body is recorded unless the read below succeeds: say why,
-          // so a body clause reads `unknown` rather than "capture is off" (#1520).
-          let responseBodyFields: Record<string, unknown> = captureBodies
-            ? { responseBodyReason: ResponseBodyReason.UNREADABLE }
-            : {};
-          if (clone !== undefined) {
-            try {
-              const text = await withBodyDeadline(clone.text());
-              if (text !== undefined) {
-                // Under the error-only path the tighter cap applies; when the app asked for body
-                // capture, a failure is projected exactly like any other response.
-                const { body, truncated } = captureBodies
-                  ? projectBody(text, contentType)
-                  : projectErrorBody(text, contentType);
-                responseBodyFields = {
-                  responseBody: body,
-                  ...(truncated ? { responseBodyTruncated: true } : {}),
-                  // Says WHY a body is here when the app never asked for bodies, so a reader does
-                  // not conclude that capture is on and trust an absent body on a 200.
-                  ...(captureBodies ? {} : { responseBodyReason: ResponseBodyReason.ERROR_STATUS }),
-                };
-              }
-            } catch {
-              /* body not readable — skip, keep the envelope */
+      if (captureBodies && isEventStream(contentType)) {
+        // SSE headers complete the request for settle. Its bounded body arrives as detail, not a second call.
+        emitRequest({ responseBodyReason: ResponseBodyReason.UNREADABLE });
+        void captureResponseBody(res, contentType, true, bodyCapture.signal)
+          .then((fields) => {
+            if (typeof fields['responseBody'] !== 'string') {
+              return;
             }
-          }
-          try {
-            emitRequest(responseBodyFields);
-          } catch {
-            /* observation is best-effort; never reject into the page */
-          }
-        })().catch(() => undefined);
+            observeSafely(() =>
+              emit(EventType.NET_RESPONSE_BODY, {
+                id,
+                method,
+                ...urlFields,
+                ...fields,
+              }),
+            );
+          })
+          .catch(() => undefined);
+      } else if ((captureBodies || wantErrorBody) && isCapturableType(contentType)) {
+        // Clone before returning the response. Read and emit in the background so the app never waits.
+        // NET_REQUEST arrives after capture completes. Use wait_for for immediate count/body assertions.
+        // Ordinary responses keep their existing 500ms deadline.
+        void captureResponseBody(res, contentType, captureBodies, bodyCapture.signal)
+          .then(emitRequest)
+          .catch(() => undefined);
       } else {
         // A type capture skips on purpose (a stream, a binary body) says so when capture is on.
         const skipped = captureBodies ? skippedBodyReason(contentType) : undefined;
@@ -711,26 +701,29 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
           this.addEventListener('loadend', () => {
             observeSafely(() => {
               const cur = meta.get(this);
-              if (cur === undefined) return;
+              if (cur === undefined) {
+                return;
+              }
               reportedNetUrls.add(cur.rawUrl);
               const xhrContentType = this.getResponseHeader('content-type');
               let responseBodyFields: Record<string, unknown> = {};
               // responseText throws unless responseType is '' or 'text' — guard before reading.
               const textReadable = '' === this.responseType || 'text' === this.responseType;
               const wantXhrErrorBody = shouldCaptureErrorBody(this.status, captureErrorBodies);
+              const capturable =
+                isCapturableType(xhrContentType) ||
+                (captureBodies && isEventStream(xhrContentType));
               // As on the fetch path: with capture on, a body that is not recorded says why (#1520).
               if (captureBodies) {
                 // A capturable type is unread only when the read fails or `responseType` is not text.
-                const skipped = isCapturableType(xhrContentType)
+                const skipped = capturable
                   ? ResponseBodyReason.UNREADABLE
                   : skippedBodyReason(xhrContentType);
-                if (skipped !== undefined) responseBodyFields = { responseBodyReason: skipped };
+                if (skipped !== undefined) {
+                  responseBodyFields = { responseBodyReason: skipped };
+                }
               }
-              if (
-                (captureBodies || wantXhrErrorBody) &&
-                textReadable &&
-                isCapturableType(xhrContentType)
-              ) {
+              if ((captureBodies || wantXhrErrorBody) && textReadable && capturable) {
                 try {
                   const { body: rb, truncated } = captureBodies
                     ? projectBody(this.responseText, xhrContentType)
@@ -813,7 +806,9 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
       constructor(u: string | URL, protocols?: string | string[]) {
         super(u, protocols);
         this.#isBridge = isBridgeSocket(String(u));
-        if (this.#isBridge) return;
+        if (this.#isBridge) {
+          return;
+        }
         // `new WebSocket(...)` is the app's constructor call — observation may not make it throw.
         observeSafely(() => {
           const urlFields = netUrlFields(String(u));
@@ -922,12 +917,18 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
       const observer = new PerformanceObserver((list) => {
         for (const raw of list.getEntries()) {
           const entry = raw as PerformanceResourceTiming;
-          if (subresourceEvents >= SUBRESOURCE_CAP) return;
+          if (subresourceEvents >= SUBRESOURCE_CAP) {
+            return;
+          }
           const type = entry.initiatorType || 'other';
           // Patched transports own their records; only document-initiated types are new here.
-          if ('fetch' === type || 'xmlhttprequest' === type) continue;
+          if ('fetch' === type || 'xmlhttprequest' === type) {
+            continue;
+          }
           const rawUrl = entry.name;
-          if (reportedNetUrls.has(rawUrl)) continue;
+          if (reportedNetUrls.has(rawUrl)) {
+            continue;
+          }
           reportedNetUrls.add(rawUrl);
           subresourceEvents += 1;
           emit(EventType.NET_REQUEST, {
@@ -957,14 +958,24 @@ export function installNetwork(emit: Emit, opts: NetworkOptions = {}): Teardown 
   }
 
   return () => {
+    if (pageSlots()[PAGE_CAPTURE] === owner) {
+      delete pageSlots()[PAGE_CAPTURE];
+    }
+    bodyCapture.abort();
     subresourceObserver?.disconnect();
     // Restore each slot ONLY if it still holds OUR wrapper. Between connect() and disconnect() the app
     // (or Sentry/analytics/a router) may have wrapped fetch/XHR/EventSource/WebSocket/sendBeacon ON TOP
     // of ours; blindly writing the original back would silently uninstall their instrumentation — the
     // dev-only SDK breaking the app it only meant to observe.
-    if (window.fetch === patchedFetch) window.fetch = origFetch;
-    if (captureMethod(proto, 'open') === patchedOpen) proto.open = origOpen;
-    if (captureMethod(proto, 'send') === patchedSend) proto.send = origSend;
+    if (window.fetch === patchedFetch) {
+      window.fetch = origFetch;
+    }
+    if (captureMethod(proto, 'open') === patchedOpen) {
+      proto.open = origOpen;
+    }
+    if (captureMethod(proto, 'send') === patchedSend) {
+      proto.send = origSend;
+    }
     if (patchedEventSource !== undefined && window.EventSource === patchedEventSource) {
       window.EventSource = origEventSource;
     }

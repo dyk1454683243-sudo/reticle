@@ -37,7 +37,9 @@ import { NotHtmlDocumentError } from '@/portal/pool/zero-install.js';
 
 function tool(name: string): (deps: ToolDeps, args: Record<string, unknown>) => Promise<unknown> {
   const def = LEASE_TOOLS.find((t) => t.name === name);
-  if (def === undefined) throw new Error(`no lease tool ${name}`);
+  if (def === undefined) {
+    throw new Error(`no lease tool ${name}`);
+  }
   // Called on its own def rather than detached. `handler` is declared method-style (see tool-kit.ts),
   // so lifting the reference out drops the receiver — harmless for these handlers today, and exactly
   // the kind of thing that stops being harmless without warning.
@@ -105,9 +107,12 @@ function fakePool(): {
         ...(opts.headed === undefined ? {} : { headed: opts.headed }),
         ...(initScript === undefined ? {} : { initScript }),
       });
-      if (true === opts.headed && opts.sessionId !== undefined) headedIds.add(opts.sessionId);
-      if (true === opts.ignoreHTTPSErrors && opts.sessionId !== undefined)
+      if (true === opts.headed && opts.sessionId !== undefined) {
+        headedIds.add(opts.sessionId);
+      }
+      if (true === opts.ignoreHTTPSErrors && opts.sessionId !== undefined) {
         certSkipIds.add(opts.sessionId);
+      }
       active += 1;
       const sessionId = opts.sessionId ?? 'gen';
       owners.set(sessionId, opts.owner);
@@ -115,7 +120,9 @@ function fakePool(): {
         stubBySession.set(sessionId, initScript);
       }
       const origin = originOf(url);
-      if (origin !== undefined) byOrigin.set(origin, sessionId);
+      if (origin !== undefined) {
+        byOrigin.set(origin, sessionId);
+      }
       return Promise.resolve({ sessionId, url, release: () => Promise.resolve() });
     },
     release(sessionId: string): Promise<void> {
@@ -123,7 +130,9 @@ function fakePool(): {
       active = Math.max(0, active - 1);
       stubBySession.delete(sessionId);
       for (const [origin, id] of byOrigin) {
-        if (id === sessionId) byOrigin.delete(origin);
+        if (id === sessionId) {
+          byOrigin.delete(origin);
+        }
       }
       return Promise.resolve();
     },
@@ -131,7 +140,11 @@ function fakePool(): {
     queuedCount: () => 0,
     leasedSessionIds: () => [...byOrigin.values()],
     leaseUrl: (id: string) => {
-      for (const [origin, leased] of byOrigin) if (leased === id) return origin;
+      for (const [origin, leased] of byOrigin) {
+        if (leased === id) {
+          return origin;
+        }
+      }
       return undefined;
     },
     leaseTtlMs: () => 300_000,
@@ -148,6 +161,8 @@ function fakePool(): {
     alias: (registeredId: string, leaseId: string) => {
       aliased.push([registeredId, leaseId]);
     },
+    // No page to move: a reused lease on another page stays where it is.
+    gotoLease: () => Promise.resolve(false),
   } as unknown as BrowserPool;
   return { pool, acquired, aliased, released };
 }
@@ -444,6 +459,95 @@ describe('reticle_lease_acquire', () => {
     expect(acquired).toHaveLength(1);
   });
 
+  // A reused lease answers for the page it was asked for (#1667). Its tab is wherever the last
+  // caller left it, so it is moved there first, and when it cannot be, the answer says where it is.
+  const reuseOnAnotherPage = (goto: (target: string) => Promise<boolean>) => {
+    const { pool } = fakePool();
+    const gotos: string[] = [];
+    const tab = { id: 'live', url: 'http://localhost:3000/a' };
+    (pool as unknown as { gotoLease: (id: string, target: string) => Promise<boolean> }).gotoLease =
+      (_id, target) => {
+        gotos.push(target);
+        return goto(target).then((went) => {
+          if (went) {
+            tab.url = target;
+          }
+          return went;
+        });
+      };
+    const deps = {
+      ...baseDeps,
+      pool,
+      sessions: { get: () => tab },
+      now: () => Date.now(),
+    } as unknown as ToolDeps;
+    return { deps, tab, gotos };
+  };
+
+  it('moves a reused lease to the requested page when its tab is on another one', async () => {
+    const { deps, tab, gotos } = reuseOnAnotherPage(() => Promise.resolve(true));
+    await tool(ReticleTool.LEASE_ACQUIRE)(deps, { url: 'http://localhost:3000/a' });
+    tab.url = 'http://localhost:3000/b';
+    const again = (await tool(ReticleTool.LEASE_ACQUIRE)(deps, {
+      url: 'http://localhost:3000/c',
+    })) as { url: string; reused?: boolean; ready: boolean; navigated?: boolean };
+
+    expect(gotos.map((u) => new URL(u).pathname)).toEqual(['/c']);
+    expect(new URL(tab.url).pathname).toBe('/c');
+    expect(again).toMatchObject({ reused: true, ready: true, navigated: true });
+    expect(new URL(again.url).pathname).toBe('/c');
+  });
+
+  it('leaves a reused lease in place when its tab is already on the requested page', async () => {
+    const { deps, tab, gotos } = reuseOnAnotherPage(() => Promise.resolve(true));
+    await tool(ReticleTool.LEASE_ACQUIRE)(deps, { url: 'http://localhost:3000/c' });
+    tab.url = `http://localhost:3000/c?${RETICLE_URL_PARAM.SESSION}=gen`;
+    const again = (await tool(ReticleTool.LEASE_ACQUIRE)(deps, {
+      url: 'http://localhost:3000/c',
+    })) as { reused?: boolean; navigated?: boolean };
+
+    expect(gotos).toEqual([]);
+    expect(again.reused).toBe(true);
+    expect(again.navigated).toBeUndefined();
+  });
+
+  it('says a moved lease is not ready when its SDK does not come back on the new page', async () => {
+    const { deps, tab } = reuseOnAnotherPage(() => Promise.resolve(true));
+    await tool(ReticleTool.LEASE_ACQUIRE)(deps, { url: 'http://localhost:3000/a' });
+    tab.url = 'http://localhost:3000/b';
+    // The tab went, but no SDK has reported from the new page; the clock runs out at once.
+    let clock = 0;
+    const silent = {
+      ...deps,
+      pool: {
+        ...deps.pool,
+        gotoLease: () => Promise.resolve(true),
+      },
+      now: () => (clock += 60_000),
+    } as unknown as ToolDeps;
+    const again = (await tool(ReticleTool.LEASE_ACQUIRE)(silent, {
+      url: 'http://localhost:3000/c',
+    })) as { ready: boolean; notReadyReason?: string; navigated?: boolean };
+
+    expect(again).toMatchObject({
+      ready: false,
+      notReadyReason: LeaseNotReadyReason.SDK_NEVER_DIALLED,
+      navigated: true,
+    });
+  });
+
+  it('answers with the page a reused lease is on when it cannot be moved', async () => {
+    const { deps, tab, gotos } = reuseOnAnotherPage(() => Promise.resolve(false));
+    await tool(ReticleTool.LEASE_ACQUIRE)(deps, { url: 'http://localhost:3000/a' });
+    tab.url = 'http://localhost:3000/b';
+    const again = (await tool(ReticleTool.LEASE_ACQUIRE)(deps, {
+      url: 'http://localhost:3000/c',
+    })) as { url: string; reused?: boolean; navigated?: boolean };
+
+    expect(gotos).toHaveLength(1);
+    expect(again).toMatchObject({ reused: true, navigated: false, url: 'http://localhost:3000/b' });
+  });
+
   it('replaces a held lease asked for with the other certificate setting, and reuses it otherwise', async () => {
     // A context's ignoreHTTPSErrors is fixed when it is made, so `false` after `true` must not get
     // the same context back with certificate checks still off (#1255).
@@ -592,7 +696,9 @@ describe('reticle_lease_acquire', () => {
       id,
       command: (name: string) => {
         probes.push(name);
-        if ('never' === answers) return Promise.reject(new Error('command timed out after 1500ms'));
+        if ('never' === answers) {
+          return Promise.reject(new Error('command timed out after 1500ms'));
+        }
         return Promise.resolve({
           ok: 'ok' === answers,
           error: 'error' === answers ? 'nope' : undefined,
@@ -775,9 +881,26 @@ describe('reticle_lease_acquire', () => {
     ).rejects.toThrow(/pool unavailable/i);
   });
 
-  it('requires a url', async () => {
+  it('requires a url when no dev server runs in the project', async () => {
     const { pool } = fakePool();
     await expect(tool(ReticleTool.LEASE_ACQUIRE)({ ...baseDeps, pool }, {})).rejects.toThrow(/url/);
+    await expect(
+      tool(ReticleTool.LEASE_ACQUIRE)(
+        { ...baseDeps, pool, projectAppUrl: () => Promise.resolve(undefined) },
+        {},
+      ),
+    ).rejects.toThrow(/url/);
+  });
+
+  // An agent that leased with no url was refused, guessed a port, and started a second dev server.
+  it('leases the dev server that runs in the project folder when the url is omitted', async () => {
+    const { pool, acquired } = fakePool();
+    const result = (await tool(ReticleTool.LEASE_ACQUIRE)(
+      { ...baseDeps, pool, projectAppUrl: () => Promise.resolve('http://localhost:5173') },
+      {},
+    )) as { sessionId: string };
+    expect(result.sessionId).toBeDefined();
+    expect(acquired.map((a) => new URL(a.url).origin)).toEqual(['http://localhost:5173']);
   });
 });
 
@@ -1243,7 +1366,9 @@ describe('reticle_lease with seedStorage', () => {
         url: 'http://localhost:3000/',
         seedStorage: { local: 12345 as unknown as Record<string, string> },
       }),
-    ).rejects.toThrow(/seedStorage is invalid: local: Expected object, received number/);
+    ).rejects.toThrow(
+      /seedStorage is invalid: local: Invalid input: expected record, received number/,
+    );
   });
 
   it('rejects an unrecognised seedStorage key instead of silently stripping it (#1142)', async () => {

@@ -11,6 +11,7 @@
 
 import {
   CodedRefusalSchema,
+  PRODUCTION_REFUSAL_PREFIX,
   RefusalCode,
   RefusalReason,
   ReticleEnv,
@@ -200,6 +201,12 @@ export const RECOVERY = {
     'and the change event that follows has been observed persisting an empty setting into the app. ' +
     'Retry with one of the listed values — note they are option VALUES, which often differ from the ' +
     'visible labels shown in brackets. This is an invalid call, not a Reticle defect.',
+  PRODUCTION_POLICY:
+    'The production policy refused this act before it reached the site, and nothing was done. The ' +
+    'call itself was valid. Do not retry it: the policy refuses it every time. Leave this step out, ' +
+    'or, when the message names an intent, end the lease and acquire a new one whose ' +
+    '`production.intent` names the action. This is a refusal by design, not a Reticle defect: there ' +
+    'is nothing to report.',
   BAD_ARGUMENTS:
     "That call did not match the tool's schema — the message above names the tool and the exact " +
     "argument it wanted. Re-read that tool's parameters and retry with the missing or corrected " +
@@ -226,13 +233,14 @@ export const RECOVERY = {
    * something that is not a top-level parameter is the whole distance between a one-line retry and
    * a lost budget.
    *
-   * The classifier is also wider than "destructive": it matches `deploy` and `publish`, so an
-   * ordinary "New deploy" button trips it. Naming a real trigger word here keeps that from reading
-   * as a malfunction on an app where nothing is being deleted.
+   * The classifier also stops a control that moves money, which is not "destructive". Naming the
+   * real trigger words here keeps a refusal on a "Pay" button from reading as a malfunction. Only
+   * words the classifier matches are named: `deploy` and `publish` are excluded on purpose (see
+   * `core/src/verdict/security.ts`).
    */
   CONFIRM_DANGEROUS:
-    'Reticle blocked a control whose label reads as consequential (delete, remove, revoke, deploy, ' +
-    'publish, pay…) on purpose. If you mean it, send the SAME call again with ' +
+    'Reticle blocked a control whose label reads as consequential (delete, remove, revoke, pay…) ' +
+    'on purpose. If you mean it, send the SAME call again with ' +
     '`args: { confirmDangerous: true }` — it goes inside the `args` object, not beside it. This is ' +
     'a deliberate refusal, not a defect: there is nothing to report.',
   UNSUPPORTED_SURFACE:
@@ -317,9 +325,9 @@ export const RECOVERY = {
    * agent's malformed call: it was then told to fix arguments that were never wrong.
    */
   HARNESS_LOCKED:
-    'The Harness unlocks once Reticle sees enough of this app; the refusal names what is missing ' +
-    'and how to close each gap. Nothing to report: close them, or drive the journey yourself with ' +
-    'reticle_act_and_wait and an `until` on its last step. Every other tool works at any coverage.',
+    'An older Reticle platform locked the Harness on its setup score. Nothing to report: drive the ' +
+    'journey yourself with reticle_act_and_wait and an `until` on its last step. Every tool works ' +
+    'at any coverage.',
 } as const;
 
 /**
@@ -359,6 +367,8 @@ const REASON_OF: Record<keyof typeof RECOVERY, RefusalReason> = {
   NOT_EDITABLE: RefusalReason.UNSUPPORTED,
   CONFIRM_DANGEROUS: RefusalReason.UNSUPPORTED,
   WRONG_TARGET: RefusalReason.UNSUPPORTED,
+  // The call was valid; the drive's policy refuses what it asked for, as for a destructive control.
+  PRODUCTION_POLICY: RefusalReason.UNSUPPORTED,
   BAD_ARGUMENTS: RefusalReason.BAD_ARGS,
   INVALID_NAME: RefusalReason.BAD_ARGS,
   // Nothing about the app or the call is wrong; the feature is switched off or unpaid for.
@@ -407,10 +417,8 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
   // platform's: matching it is matching ourselves.
   { match: /credits are used\./, hint: RECOVERY.HARNESS_OFF },
   {
-    // The gate's own words, and the platform's "locked: connect your app first": expected states.
-    match: new RegExp(
-      `(?:^Harness unlocks at \\d+% instrumentation)|(?:^${escapeRegExp(RefusalLead[PlatformRefusalCode.HARNESS_LOCKED])})`,
-    ),
+    // An older platform's "locked": an expected state, not a defect.
+    match: new RegExp(`^${escapeRegExp(RefusalLead[PlatformRefusalCode.HARNESS_LOCKED])}`),
     hint: RECOVERY.HARNESS_LOCKED,
   },
   // Three conditions the daemon understands perfectly and still asked for a bug report about. Each
@@ -472,6 +480,8 @@ const RULES: readonly { readonly match: RegExp; readonly hint: string }[] = [
     match: /target matched \d+ elements and an action must not guess/i,
     hint: RECOVERY.AMBIGUOUS_TARGET,
   },
+  // Before the catch-all: every refusal names `reticle_lease`, and the call was valid.
+  { match: new RegExp(`^${PRODUCTION_REFUSAL_PREFIX}`), hint: RECOVERY.PRODUCTION_POLICY },
   // Authored by Reticle, about the caller's arguments: the message already names the valid answers.
   { match: /^unknown action '/i, hint: RECOVERY.BAD_ARGUMENTS },
   { match: /^unsupported query strategy '/i, hint: RECOVERY.BAD_ARGUMENTS },

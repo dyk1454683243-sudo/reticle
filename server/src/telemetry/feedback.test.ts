@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FEEDBACK_TEXT_MAX, StackUnknownReason } from '@reticlehq/core/telemetry';
+import {
+  FEEDBACK_TEXT_MAX,
+  StackUnknownReason,
+  isFeedbackContact,
+  type Feedback,
+} from '@reticlehq/core/telemetry';
+import * as telemetryModule from './telemetry.js';
 import {
   FEEDBACK_ENV,
   REDACTED,
@@ -51,6 +57,63 @@ describe('redactFeedbackText', () => {
     const out = redactFeedbackText(`the request used ${secret} and failed`, FEEDBACK_TEXT_MAX);
     expect(out.text).not.toContain(secret);
     expect(out.removed).toContain(label);
+  });
+
+  /**
+   * Each of these left the redactor unchanged, and the prompt hook uses this redactor for every
+   * prompt it keeps. The keys are built at run time, so no scanner reads them as real secrets.
+   */
+  const fake = (...parts: string[]): string => parts.join('');
+  it.each([
+    [
+      'a bare Stripe live key',
+      `use ${fake('sk', '_live_', '51HxQ', 'a'.repeat(20))} for it`,
+      'sk_live',
+    ],
+    ['a bare Stripe test key', `use ${fake('sk', '_test_', 'b'.repeat(24))} here`, 'sk_test'],
+    [
+      'an env Stripe key',
+      `STRIPE_SECRET_KEY=${fake('sk', '_live_', 'c'.repeat(24))}`,
+      'c'.repeat(24),
+    ],
+    [
+      'an env AWS secret key',
+      `AWS_SECRET_ACCESS_KEY=${fake('wJalrXUtnFEMI', '/K7MDENG/', 'bPxRfiCYEXAMPLEKEY')}`,
+      'wJalrXUtnFEMI',
+    ],
+    ['an AWS access key id', `key ${fake('AKIA', 'Z'.repeat(16))} here`, 'AKIA'],
+    ['a Google API key', `maps ${fake('AIza', 'S'.repeat(35))} key`, 'AIza'],
+    ['a GitLab token', `push ${fake('glpat', '-', 'g'.repeat(20))} now`, 'glpat'],
+    ['a GitHub classic token', `gh ${fake('ghp', '_', 'h'.repeat(36))}`, 'ghp_'],
+    ['a GitHub fine-grained token', `gh ${fake('github', '_pat_', 'p'.repeat(40))}`, 'github_pat'],
+    ['a Slack bot token', `slack ${fake('xox', 'b-', '1234567890-', 'q'.repeat(12))}`, 'xoxb'],
+    ['a Slack user token', `slack ${fake('xox', 'p-', '1234567890-', 'r'.repeat(12))}`, 'xoxp'],
+    ['a DB password in env style', 'DB_PASS: Tr0ub4dor&3', 'Tr0ub4dor'],
+    ['a token in env style', 'GITHUB_TOKEN=abc123def456', 'abc123def456'],
+    ['a password in a sentence', 'my password is hunter2', 'hunter2'],
+    ['a card number', 'charge 4242 4242 4242 4242 today', '4242 4242'],
+    ['a card number with no spaces', 'card 4111111111111111 failed', '4111111111111111'],
+    ['an international phone number', 'call +44 20 7946 0958 later', '7946'],
+    ['a US phone number', 'call (415) 555-0100 later', '555-0100'],
+  ])('strips %s', (_label, input, leak) => {
+    const out = redactFeedbackText(input, FEEDBACK_TEXT_MAX);
+    expect(out.text, out.text).not.toContain(leak);
+    expect(out.text).toContain(REDACTED);
+  });
+
+  it('hides the password and keeps the sentence readable', () => {
+    expect(redactFeedbackText('my password is hunter2', FEEDBACK_TEXT_MAX).text).toBe(
+      `my password${REDACTED}`,
+    );
+  });
+
+  it.each([
+    ['a numeric id that fails the card check', 'order 4242424242424241 shipped'],
+    ['a millisecond timestamp', 'at 1729300000000 it failed'],
+    ['a name that only contains a sensitive word', 'PASSPORT_ID=12 and TOKENIZER_MODE=fast'],
+    ['a short number with a plus', 'count went +12 after the click'],
+  ])('keeps %s', (_label, input) => {
+    expect(redactFeedbackText(input, FEEDBACK_TEXT_MAX).text).toBe(input);
   });
 
   it('strips a home directory path — it carries the account name', () => {
@@ -331,5 +394,46 @@ describe('summarizeTrace', () => {
     for (const leak of ['hunter2', 'Jane', 'Smith', 'e3', 'Welcome']) {
       expect(out).not.toContain(leak);
     }
+  });
+});
+
+/**
+ * A reply address, only when the person gave one. It is the one personal value this channel sends,
+ * so it must arrive exactly as given and must be absent from every report that did not give it.
+ */
+describe('a reply address on feedback', () => {
+  it('sends the address as given, and only when it is given', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'feedback-contact-'));
+    // The outbox is written under the home folder before the send. Keep it out of the real one.
+    vi.stubEnv('HOME', project);
+    const emit = vi.fn(() => Promise.resolve(true));
+    vi.spyOn(telemetryModule, 'getTelemetry').mockReturnValue({
+      emit,
+      enabled: true,
+      firstRun: false,
+    });
+    await submitFeedback(
+      { source: 'human', kind: 'experience', text: 'works well', contact: 'ada@example.com' },
+      { cwd: project, env: {} },
+    );
+    await submitFeedback(
+      { source: 'human', kind: 'experience', text: 'works well' },
+      { cwd: project, env: {} },
+    );
+    const blocks = (emit.mock.calls as unknown as [string, { feedback: Feedback }][]).map(
+      (call) => call[1].feedback,
+    );
+    expect(blocks[0]?.contact).toBe('ada@example.com');
+    expect(blocks[1]).not.toHaveProperty('contact');
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts one plain address and refuses anything else', () => {
+    expect(isFeedbackContact('ada@example.com')).toBe(true);
+    expect(isFeedbackContact('ada example.com')).toBe(false);
+    expect(isFeedbackContact('ada@example.com, bob@example.com')).toBe(false);
+    expect(isFeedbackContact('ada@localhost')).toBe(false);
+    expect(isFeedbackContact(`${'a'.repeat(250)}@example.com`)).toBe(false);
   });
 });

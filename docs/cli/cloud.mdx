@@ -42,7 +42,7 @@ npx @reticlehq/server connect [--project <name|id>] [--workspace <name|id>] [--u
 
 Signs in if needed (a browser device flow like `gh auth login`: approve in the browser, the CLI polls until confirmed), then binds this repository to a cloud project and sends local history. It **mints** a project-scoped key, so there is nothing to paste; with `RETICLE_API_KEY` already set, it resolves that key's project instead. `--project` accepts a slug id or a display name, and creates the project when no project has that name. Omitted, the project is named after the `projectId` in `.reticle.json`, else after this folder. `--workspace` picks the workspace to link in when you belong to more than one. `--no-install` is passed to the `init` it runs for an unwired app. Writes `cloud.json` and the key.
 
-`reticle login`, `reticle link` and `reticle project` are the old spellings. They still work for one release and print one line naming `connect`. To sign in without a browser (an agent, a server), `login` keeps a two-step email path: `reticle login --email <e> [--org <name>]` mails a 6-digit code, then `reticle login --email <e> --code <123456>` signs in and links this repo. For CI, use `RETICLE_API_KEY` rather than any sign-in.
+`reticle login`, `reticle link` and `reticle project` are the old spellings. They still work for one release and print one line naming `connect`. Sign-in is with Google or GitHub, in the browser. Email sign-in is gone: `reticle login --email` stops and says so. Without a browser (CI, an agent, a server), set `RETICLE_API_KEY` to a key from Settings > API keys.
 
 ### `reticle logout`
 
@@ -59,10 +59,10 @@ Signs out of ONE host. Which host: `--url`, else `RETICLE_CLOUD_URL`, else the a
 ### `reticle config`
 
 ```bash
-npx @reticlehq/server config [--runs on|off] [--memory on|off] [--flows on|off] [--verify local|server]
+npx @reticlehq/server config [--runs on|off] [--memory on|off] [--flows on|off] [--verify local|server] [--harness on|off]
 ```
 
-Edits `.reticle/cloud.json` in place. Any value other than `on` or `off` (or `local` or `server` for `--verify`) exits `2`. Requires the repo to be linked; run in an unlinked repo it exits `2` before it looks at the flags at all:
+Edits `.reticle/cloud.json` in place. Any value other than `on` or `off` (or `local` or `server` for `--verify`) exits `2`. `--harness on|off` switches the Harness for this project on the platform, not in `cloud.json`. Each drive spends the workspace's credits. It exits `1` when the platform did not switch it (locked, no access, or offline). Requires the repo to be linked; run in an unlinked repo it exits `2` before it looks at the flags at all:
 
 ```
 reticle: no .reticle/cloud.json here ... run `reticle connect` first

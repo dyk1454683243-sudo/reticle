@@ -21,6 +21,11 @@ interface ScrollResult {
 
 const FALLBACK_STEP_PX = 400;
 const VIEWPORT_FRACTION = 0.8;
+export const SCROLL_FRACTION_RANGE_ERROR_PREFIX = 'scroll fraction must be between 0 and 1, got ';
+
+export function fractionOutOfRangeMessage(fraction: number): string {
+  return `${SCROLL_FRACTION_RANGE_ERROR_PREFIX}${fraction}`;
+}
 
 /**
  * The nearest scrollable ancestor of `el` (inclusive), else the document scrolling element.
@@ -73,6 +78,10 @@ export function scrollFrom(
   fraction?: number,
   dx?: number,
 ): ScrollResult {
+  if (fraction !== undefined && (fraction < 0 || fraction > 1 || Number.isNaN(fraction))) {
+    throw new RangeError(fractionOutOfRangeMessage(fraction));
+  }
+
   const axis: 'x' | 'y' =
     dx !== undefined && dx !== 0 && (dy === undefined || 0 === dy) ? 'x' : 'y';
   const target =
@@ -82,13 +91,15 @@ export function scrollFrom(
 
   const before = target.scrollTop;
   const beforeLeft = target.scrollLeft;
-  if (fraction !== undefined && fraction >= 0 && fraction <= 1) {
+  if (fraction !== undefined) {
     target.scrollTop = Math.round(target.scrollHeight * fraction);
   } else {
     // A NEGATIVE dy scrolls back up. The default step is forward, so a plain "reveal the next
     // window" call is unaffected — but without this a page can only be walked one way, and whatever
     // scrolled past is unreachable without reloading.
-    if (dx !== undefined && dx !== 0) target.scrollLeft = beforeLeft + dx;
+    if (dx !== undefined && dx !== 0) {
+      target.scrollLeft = beforeLeft + dx;
+    }
     if (dx === undefined || (dy !== undefined && 0 !== dy)) {
       const step = dy ?? (Math.round(target.clientHeight * VIEWPORT_FRACTION) || FALLBACK_STEP_PX);
       target.scrollTop = before + step;

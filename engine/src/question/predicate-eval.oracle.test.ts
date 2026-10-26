@@ -39,11 +39,42 @@ describe('evalSettled — in-flight requests are not settled', () => {
   });
 });
 
+/*
+ * A saved `net { count }` check gates on `settled` so a late duplicate request is counted. The quiet
+ * window also counted DOM attribute churn, so on a page with a running animation the check failed
+ * with "not settled: last activity (dom.attr) 56ms ago" when the machine was loaded — a flaky red
+ * on a check about requests. Seen as a merge-queue bench ejection on 2026-10-19.
+ */
+describe('evalSettled — a network-scoped settle ignores DOM churn', () => {
+  const churn = [
+    ev(EventType.NET_REQUEST, { id: 'r1', url: '/api/generate-script', status: 200 }, 100),
+    ev(EventType.DOM_ATTR, { target: 'spinner' }, 1944),
+  ];
+
+  it('passes once the network has been quiet, while the DOM still changes', () => {
+    expect(evalSettled(churn, { kind: 'settled', channel: 'network' }, 2000).pass).toBe(true);
+  });
+
+  it('still waits on the DOM when no scope is named', () => {
+    expect(evalSettled(churn, { kind: 'settled' }, 2000).pass).toBe(false);
+  });
+
+  it('still fails while a request is in flight', () => {
+    const flying = [...churn, ev(EventType.NET_PENDING, { id: 'r2', url: '/api/x' }, 1500)];
+    expect(evalSettled(flying, { kind: 'settled', channel: 'network' }, 9000).pass).toBe(false);
+  });
+
+  it('still waits for network quiet after the last request', () => {
+    const late = [ev(EventType.NET_REQUEST, { id: 'r3', url: '/api/x', status: 200 }, 1800)];
+    expect(evalSettled(late, { kind: 'settled', channel: 'network' }, 2000).pass).toBe(false);
+  });
+});
+
 describe('evalConsole — uncaptured levels do not false-pass', () => {
-  it('does NOT silently pass an `absent` assertion for an uncaptured level (info)', () => {
-    // Reticle only instruments console.log/warn/error. An `absent: info` assertion verifies nothing,
-    // so it must not report green.
-    const r = evalConsole([], { kind: 'console', level: 'info', absent: true });
+  it('does NOT silently pass an `absent` assertion for an uncaptured level (trace)', () => {
+    // console.trace is not patched. An `absent: trace` assertion verifies nothing, so it must not
+    // report green.
+    const r = evalConsole([], { kind: 'console', level: 'trace', absent: true });
     expect(r.pass).toBe(false);
   });
 
@@ -51,6 +82,37 @@ describe('evalConsole — uncaptured levels do not false-pass', () => {
     const withLog = [ev(EventType.CONSOLE_LOG, { text: 'hi' }, 10)];
     expect(evalConsole(withLog, { kind: 'console', level: 'log' }).pass).toBe(true);
     expect(evalConsole([], { kind: 'console', level: 'log', absent: true }).pass).toBe(true);
+  });
+});
+
+/*
+ * The SDK has patched console.info and console.debug since 2026-07, and reticle_observe shows them.
+ * The predicate still called them uncaptured: `level: "info"` was refused, and a message check with
+ * no level skipped info lines, so `{ contains: "X", absent: true }` passed while X was logged with
+ * console.info. That is a false green on an absence check.
+ */
+describe('evalConsole — info and debug are captured levels', () => {
+  const info = [ev(EventType.CONSOLE_INFO, { message: 'sync done' }, 10)];
+  const debug = [ev(EventType.CONSOLE_DEBUG, { message: 'cache warm' }, 10)];
+
+  it('finds a console.info line by level', () => {
+    expect(evalConsole(info, { kind: 'console', level: 'info', contains: 'sync done' }).pass).toBe(
+      true,
+    );
+    expect(
+      evalConsole(debug, { kind: 'console', level: 'debug', contains: 'cache warm' }).pass,
+    ).toBe(true);
+  });
+
+  it('fails an absence check for a message that was logged with console.info', () => {
+    expect(evalConsole(info, { kind: 'console', contains: 'sync done', absent: true }).pass).toBe(
+      false,
+    );
+    expect(evalConsole(info, { kind: 'console', level: 'info', absent: true }).pass).toBe(false);
+  });
+
+  it('keeps a clean-console check deaf to info and debug chatter', () => {
+    expect(evalConsole([...info, ...debug], { kind: 'console', absent: true }).pass).toBe(true);
   });
 });
 
